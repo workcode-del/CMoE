@@ -127,14 +127,13 @@ if __name__ == '__main__':
     print("cali_data: ", args.dataset)
 
     tick = time.time()
-    carved_model, tick_1, tick_2, pre_ppl = cmoe_sequential(model, dataloader, args)
+    carved_model, tick_1, tick_2, pre_ppl, ppl = cmoe_sequential(model, dataloader, args)
     rt_construct = tick_1 - tick
     extra_time = tick_2 - tick_1
     rt = time.time() - tick - extra_time
     print("Runtime of training-free construction: ", rt_construct)
     print("Runtime of fine-tuning construction: ", rt)
     
-
     # model_name = model.split("/")[-1]
     # save_dir = f"{model_name}_carved_{args.dataset}_{args.nsamples}_epoch_{args.epoch}_S{args.nshared}_A{args.nactivated}_E{args.nexperts}_K{args.k_act}_B{args.bias_speed}"
     # print(f"Saving carved model to {save_dir}...")
@@ -148,18 +147,6 @@ if __name__ == '__main__':
         name = "meta-llama/Meta-Llama-3-8B"
     else:
         name = "meta-llama/Llama-2-7b-hf"
-
-    # datasets = ['c4-new', 'wikitext2']
-    datasets = ['wikitext2']
-    ppl = []
-    for dataset in datasets:
-        dataloader, testloader = get_loaders(
-            dataset, seed=args.seed, model=args.model, seqlen=model.seqlen, bsz = args.carve_bsz
-        )
-        print(dataset)
-        eval_set = dataset
-        ppl_i = cmoe_ppl_eval(carved_model, testloader, eval_set, args)
-        ppl.append(f"{dataset}: {ppl_i}")
 
     model_name = args.model.split("/")[-1]
     file_name = f"{model_name}_{args.dataset}_{args.nsamples}_epoch_{args.epoch}_S{args.nshared}_A{args.nactivated}_E{args.nexperts}.txt"

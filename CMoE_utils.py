@@ -44,7 +44,7 @@ def analyze_neuron_activations(scores: torch.Tensor,
         plt.figure(figsize=(10, 10))
         
         # Plot 1: Activation rates histogram
-        plt.subplot(2, 1, 2)
+        plt.subplot(2, 1, 1)  
         plt.hist(activation_rates.detach().to(dtype=torch.float32).numpy(), bins=500, edgecolor='black')
         plt.title('Distribution of Neuron Activation Rates')
         plt.xlabel('Activation Rate')
@@ -66,7 +66,7 @@ def analyze_neuron_activations(scores: torch.Tensor,
                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
         # Plot 2: Neuron indices vs Activation counts
-        plt.subplot(2, 1, 3)
+        plt.subplot(2, 1, 2)  
         neuron_indices = np.arange(inter_size)
         plt.plot(neuron_indices, activation_counts.detach().to(dtype=torch.float32).numpy(), 'b-', alpha=0.6)
         plt.title('Activation Counts per Neuron Index')

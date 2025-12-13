@@ -26,29 +26,32 @@ def cmoe_ppl_eval(model, testloader, eval_set, args):
             super().__init__()
             self.module = module
         def forward(self, inp, **kwargs):
-            # Store input from the first layer (which is already on the correct device)
             inps.append(inp.clone())
             cache['i'] += 1
             cache['attention_mask'] = kwargs['attention_mask']
             cache['position_ids'] = kwargs['position_ids']
             cache['position_embeddings'] = kwargs.get('position_embeddings')
             raise ValueError
-    
-    # Get the first layer's device
+    # Explicitly move embedding layers to cuda:0
+    embedding_device = next(model.model.embed_tokens.parameters()).device
+    print('Embedding device:', embedding_device)
+ 
     first_layer_device = next(layers[0].parameters()).device
     layers[0] = Catcher(layers[0].to(first_layer_device))
-    
+    if hasattr(model.model, 'embed_tokens'):
+        model.model.embed_tokens = model.model.embed_tokens.to(first_layer_device)
+    if hasattr(model.model, 'embed_positions'):
+        model.model.embed_positions = model.model.embed_positions.to(first_layer_device)
+
     testenc = testloader.input_ids
     nsamples = testenc.shape[1] // model.seqlen
     nsamples = 64
     print('ppl evaluation samples:', nsamples)
 
-
-    # Get input samples from all layers
     for i in range(nsamples):
         batch = testenc[:, (i * model.seqlen):((i + 1) * model.seqlen)].to(first_layer_device)
         try:
-            model(batch)
+            model(batch.to(DEV))
         except ValueError:
             pass
     
@@ -202,19 +205,35 @@ def cmoe_sequential(model, dataloader, args):
         pre_ppl.append(f"{dataset}: {ppl_i}")
     
     tick_2 = time.time()
-    
-    # LoRa-based Supervised Fine-tuning
-    for layer in layers:
-            layer.mlp.cus_training = True
 
-    model.cuda()
-    model = simple_sft(model, args, epoch = args.epoch)
+    sft_flag = args.epoch > 0
+    if sft_flag:
+        print('Starting SFT...')    
+        # LoRa-based Supervised Fine-tuning
+        for layer in layers:
+                layer.mlp.cus_training = True
 
-    for layer in layers:
-        layer.mlp.cus_training = False
+        model.cuda()
+        model = simple_sft(model, args, epoch = args.epoch)
 
-    model.eval()
+        for layer in layers:
+            layer.mlp.cus_training = False
 
-    model.config.use_cache = use_cache
-    
-    return model, tick_1, tick_2, pre_ppl
+        model.eval()
+
+        model.config.use_cache = use_cache
+        print('SFT_ppl:')
+        ppl = []
+        datasets = ['wikitext2', 'c4-new']
+        for dataset in datasets:
+            dataloader, testloader = get_loaders(
+                dataset, seed=args.seed, model=args.model, seqlen=model.seqlen, bsz = args.carve_bsz
+            )
+            print(dataset)
+            eval_set = dataset
+            ppl_i = cmoe_ppl_eval(model, testloader, eval_set, args)
+            ppl.append(f"{dataset}: {ppl_i}")
+        
+        print("SFT_ppl: ", ppl)
+
+    return model, tick_1, tick_2, pre_ppl, ppl if sft_flag else None
