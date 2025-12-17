@@ -149,9 +149,9 @@ if __name__ == '__main__':
     print("cali_data: ", args.dataset)
 
     tick = time.time()
-    ori_ppl = cmoe_ppl_eval(model, testloader, args.dataset, args)
-    print(f"Original model ppl on {args.dataset}: {ori_ppl}")
-    
+    # ori_ppl = cmoe_ppl_eval(model, testloader, args.dataset, args)
+    # print(f"Original model ppl on {args.dataset}: {ori_ppl}")
+
     carved_model, tick_1, tick_2, pre_ppl, ppl = cmoe_sequential(model, tokenizer, dataloader, args)
     rt_construct = tick_1 - tick
     extra_time = tick_2 - tick_1

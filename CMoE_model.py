@@ -68,7 +68,7 @@ class Router(nn.Module):
         return weights.type_as(x), indices
 
 class MoE(nn.Module):
-    def __init__(self, hidden_size, moe_inter_dim, n_experts, n_shared, n_activated):
+    def __init__(self, hidden_size, moe_inter_dim, n_experts, n_shared, n_activated, return_router_info = False):
         super().__init__()
         self.dim = hidden_size
         n_routed_experts = n_experts - n_shared
@@ -85,6 +85,7 @@ class MoE(nn.Module):
 
         self.cus_training = False
         self.enable_scale = True
+        self.return_router_info = return_router_info
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         shape = x.size()
@@ -106,4 +107,9 @@ class MoE(nn.Module):
             else:
                 y[idx] += expert(x[idx]) 
         z = self.shared_experts(x)
-        return (y + z).view(shape)
+        hidden_states = (y + z).view(shape)
+
+        if self.return_router_info:
+            return hidden_states, weights
+        else:
+            return hidden_states

@@ -405,8 +405,10 @@ def construct_moe_from_existing(layer, inp, attention_mask, position_ids, positi
  
     # MoE
     new_up_proj_size = all_up_proj_size // n_experts
-    print(embedding_size, new_up_proj_size, n_experts, n_shared, n_activated)
-    moe = MoE(embedding_size, new_up_proj_size, n_experts, n_shared, n_activated)
+    # print(embedding_size, new_up_proj_size, n_experts, n_shared, n_activated)
+
+    return_router_info = 'olmoe' in args.model.lower()
+    moe = MoE(embedding_size, new_up_proj_size, n_experts, n_shared, n_activated, return_router_info)
     moe.gate = router
     moe.experts = new_experts[n_shared:]
     moe.shared_experts = merged_experts(new_experts[:n_shared])
@@ -421,8 +423,16 @@ def construct_moe_from_existing(layer, inp, attention_mask, position_ids, positi
     # print_device_info(h_pre, "h_pre")
     # print(h_pre.shape)
 
-    moe_out = moe(h_pre) + residual
+    # print(moe)
+    if return_router_info:
+        moe_out, _ = moe(h_pre)
+    else:
+        moe_out = moe(h_pre)
+    moe_out = moe_out + residual
     # Replace the old MoE layer with the new one
+    # print(layer.mlp)
+    # print(moe)
+
     layer.mlp = moe
-        
+    
     return moe_out
