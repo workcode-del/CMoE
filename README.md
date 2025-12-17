@@ -7,9 +7,9 @@ Implementation for the paper [CMoE: Fast Carving of Mixture-of-Experts for Effic
 ```bash
 conda create -n cmoe python=3.11
 conda activate cmoe
-conda install pytorch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 pytorch-cuda=12.4 -c pytorch -c nvidia
-pip install datasets==2.21.0
-pip install transformers==4.47.1
+conda install pytorch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 pytorch-cuda=12.8 -c pytorch -c nvidia
+pip install datasets==4.4.1
+pip install transformers==4.57.3
 pip install accelerate==1.2.1
 pip install sentencepiece==0.2.0
 pip install protobuf==5.29.2
