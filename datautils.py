@@ -1,3 +1,4 @@
+from pyexpat import model
 import numpy as np
 import torch
 
@@ -13,12 +14,10 @@ def set_seed(seed):
     torch.random.manual_seed(seed)
 
 
-def get_wikitext2(nsamples, seed, seqlen, model, bsz = 8):
+def get_wikitext2(nsamples, seed, seqlen, tokenizer, bsz = 8):
     traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
     testdata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
 
-    from transformers import AutoTokenizer 
-    tokenizer = AutoTokenizer.from_pretrained(model, use_fast=False)
     trainenc = tokenizer("\n\n".join(traindata['text']), return_tensors='pt')
     testenc = tokenizer("\n\n".join(testdata['text']), return_tensors='pt')
 
@@ -46,13 +45,11 @@ def get_wikitext2(nsamples, seed, seqlen, model, bsz = 8):
         trainloader.append((batch_i, tar_i))
     return trainloader, testenc
 
-def get_ptb(nsamples, seed, seqlen, model):
+def get_ptb(nsamples, seed, seqlen, tokenizer):
 
     traindata = load_dataset('ptb_text_only', 'penn_treebank', split='train')
     valdata = load_dataset('ptb_text_only', 'penn_treebank', split='validation')
 
-    from transformers import AutoTokenizer 
-    tokenizer = AutoTokenizer.from_pretrained(model, use_fast=False)
     trainenc = tokenizer("\n\n".join(traindata['sentence']), return_tensors='pt')
     testenc = tokenizer("\n\n".join(valdata['sentence']), return_tensors='pt')
 
@@ -68,7 +65,7 @@ def get_ptb(nsamples, seed, seqlen, model):
         trainloader.append((inp, tar))
     return trainloader, testenc
 
-def get_c4(nsamples, seed, seqlen, model, bsz = 8):
+def get_c4(nsamples, seed, seqlen, tokenizer, bsz = 8):
 
     traindata = load_dataset(
         'allenai/c4', data_files={'train': 'en/c4-train.00000-of-01024.json.gz'}, split='train'
@@ -76,9 +73,6 @@ def get_c4(nsamples, seed, seqlen, model, bsz = 8):
     valdata = load_dataset(
         'allenai/c4', data_files={'validation': 'en/c4-validation.00000-of-00008.json.gz'}, split='validation'
     )
-
-    from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model, use_fast=False)
 
     import random
     random.seed(seed)
@@ -132,13 +126,11 @@ def get_c4(nsamples, seed, seqlen, model, bsz = 8):
 
     return trainloader, valenc 
 
-def get_ptb_new(nsamples, seed, seqlen, model):
+def get_ptb_new(nsamples, seed, seqlen, tokenizer):
 
     traindata = load_dataset('ptb_text_only', 'penn_treebank', split='train')
     testdata = load_dataset('ptb_text_only', 'penn_treebank', split='test')
 
-    from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model, use_fast=False)
     trainenc = tokenizer(" ".join(traindata['sentence']), return_tensors='pt')
     testenc = tokenizer(" ".join(testdata['sentence']), return_tensors='pt')
 
@@ -154,7 +146,7 @@ def get_ptb_new(nsamples, seed, seqlen, model):
         trainloader.append((inp, tar))
     return trainloader, testenc
 
-def get_c4_new(nsamples, seed, seqlen, model):
+def get_c4_new(nsamples, seed, seqlen, tokenizer):
 
     traindata = load_dataset(
         'allenai/c4', data_files={'train': 'en/c4-train.00000-of-01024.json.gz'}, split='train'
@@ -162,10 +154,6 @@ def get_c4_new(nsamples, seed, seqlen, model):
     valdata = load_dataset(
         'allenai/c4', data_files={'validation': 'en/c4-validation.00000-of-00008.json.gz'}, split='validation'
     )
-
-
-    from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model, use_fast=False)
 
     import random
     random.seed(seed)
@@ -194,16 +182,14 @@ def get_c4_new(nsamples, seed, seqlen, model):
     return trainloader, valenc
 
 
-def get_loaders(
-    name, nsamples=128, seed=0, seqlen=2048, model='', bsz = 8
-):
+def get_loaders(name, nsamples=128, seed=0, seqlen=2048, tokenizer=None, bsz = 8):
     if 'wikitext2' in name:
-        return get_wikitext2(nsamples, seed, seqlen, model, bsz = bsz)
+        return get_wikitext2(nsamples, seed, seqlen, tokenizer, bsz = bsz)
     if 'ptb' in name:
         if 'new' in name:
-            return get_ptb_new(nsamples, seed, seqlen, model)
-        return get_ptb(nsamples, seed, seqlen, model)
+            return get_ptb_new(nsamples, seed, seqlen, tokenizer)
+        return get_ptb(nsamples, seed, seqlen, tokenizer)
     if 'c4' in name:
         if 'new' in name:
-            return get_c4_new(nsamples, seed, seqlen, model)
-        return get_c4(nsamples, seed, seqlen, model)
+            return get_c4_new(nsamples, seed, seqlen, tokenizer)
+        return get_c4(nsamples, seed, seqlen, tokenizer)

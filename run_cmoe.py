@@ -14,7 +14,7 @@ from CMoE_model import *
 from CMoE_sequential import *
 from zero_eval import *
 from sft_utils import simple_sft
-
+from transformers import AutoTokenizer 
 
 def get_llama(model):
     def skip(*args, **kwargs):
@@ -38,6 +38,18 @@ def get_llava(model):
     from llava.model import LlavaLlamaForCausalLM
 
     model = LlavaLlamaForCausalLM.from_pretrained(model, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, device_map = 'auto')
+    model.seqlen = 2048
+    return model
+
+def get_olmoe(model):
+    def skip(*args, **kwargs):
+        pass
+    # torch.nn.init.kaiming_uniform_ = skip
+    # torch.nn.init.uniform_ = skip
+    # torch.nn.init.normal_ = skip
+    from transformers import OlmoeForCausalLM
+
+    model = OlmoeForCausalLM.from_pretrained(model, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, device_map = 'auto')
     model.seqlen = 2048
     return model
 
@@ -112,15 +124,24 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     
-    print(args.model.lower())
+    print("Loading model: ", args.model.lower())
     if 'llava' in args.model.lower():
         model = get_llava(args.model)
+    elif 'olmoe' in args.model.lower():
+        model = get_olmoe(args.model)
     else:
         model = get_llama(args.model)
     model.eval()
     
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
+
     dataloader, testloader = get_loaders(
-        args.dataset, nsamples=args.nsamples, seed=args.seed, model=args.model, seqlen=model.seqlen, bsz = args.carve_bsz
+        args.dataset, 
+        nsamples=args.nsamples, 
+        seed=args.seed, 
+        tokenizer=tokenizer, 
+        seqlen=model.seqlen, 
+        bsz = args.carve_bsz
     )
 
     print("number of data: ", args.nsamples)
@@ -128,7 +149,7 @@ if __name__ == '__main__':
     print("cali_data: ", args.dataset)
 
     tick = time.time()
-    carved_model, tick_1, tick_2, pre_ppl, ppl = cmoe_sequential(model, dataloader, args)
+    carved_model, tick_1, tick_2, pre_ppl, ppl = cmoe_sequential(model, tokenizer, dataloader, args)
     rt_construct = tick_1 - tick
     extra_time = tick_2 - tick_1
     rt = time.time() - tick - extra_time
@@ -141,13 +162,10 @@ if __name__ == '__main__':
     # os.makedirs(save_dir, exist_ok=True)
     # model.save_pretrained(save_dir)
 
-    from transformers import AutoTokenizer 
-    tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=False)
-
-    if 'llama-3' in args.model.lower():
-        name = "meta-llama/Meta-Llama-3-8B"
-    else:
-        name = "meta-llama/Llama-2-7b-hf"
+    # if 'llama-3' in args.model.lower():
+    #     name = "meta-llama/Meta-Llama-3-8B"
+    # else:
+    #     name = "meta-llama/Llama-2-7b-hf"
 
     model_name = args.model.split("/")[-1]
     file_name = f"{model_name}_{args.dataset}_{args.nsamples}_epoch_{args.epoch}_S{args.nshared}_A{args.nactivated}_E{args.nexperts}.txt"

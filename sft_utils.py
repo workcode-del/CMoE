@@ -2,11 +2,10 @@ from peft import get_peft_model, LoraConfig, TaskType
 
 from datautils import *
 
-def simple_sft(model, args, epoch = 1):
+def simple_sft(model, tokenizer, args, epoch = 1):
     dataloader, testloader = get_loaders(
-        args.dataset, nsamples=args.nsamples, seed=args.seed, model=args.model, seqlen=model.seqlen, bsz = args.sft_bsz
+        args.dataset, nsamples=args.nsamples, seed=args.seed, tokenizer=tokenizer, seqlen=model.seqlen, bsz = args.sft_bsz
     )
-
 
     lora_config = LoraConfig(
         r = 8,

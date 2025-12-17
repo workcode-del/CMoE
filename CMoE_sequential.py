@@ -3,7 +3,7 @@ import torch.nn as nn
 import copy
 import time
 from tqdm import tqdm
-from CMoE_utils import construct_moe
+from CMoE_utils import construct_moe, construct_moe_from_existing
 from datautils import *
 from sft_utils import simple_sft
 
@@ -122,7 +122,7 @@ def cmoe_ppl_eval(model, testloader, eval_set, args):
 
     return ppl.item()
 
-def cmoe_sequential(model, dataloader, args):
+def cmoe_sequential(model, tokenizer, dataloader, args):
     print('Starting ...')
 
     use_cache = model.config.use_cache
@@ -175,19 +175,38 @@ def cmoe_sequential(model, dataloader, args):
 
     inp = copy.deepcopy(inps[0])
 
+    # Check if the layer is already a MoE layer
+  
     # MoE Carving
     carve_inp = copy.deepcopy(inp)
     for layer in tqdm(layers, desc = 'Carving MoE layers...'):
-        moe_out = construct_moe(layer, 
-            carve_inp, 
-            attention_mask, 
-            position_ids,
-            position_embeddings,
-            n_experts = args.nexperts,
-            n_activated = args.nactivated,
-            n_shared = args.nshared,
-            args = args
-        )
+        moe_model_flag = hasattr(layer.mlp, 'gate') or hasattr(layer.mlp, 'experts')
+        # if moe_model_flag:
+        #     print("The model is already a MoE model. Proceeding to split experts. ")
+        # else:
+        #     print("The model is a dense model. Proceeding to carve MoE layers. ")
+        if moe_model_flag:
+            moe_out = construct_moe_from_existing(layer, 
+                carve_inp, 
+                attention_mask, 
+                position_ids,
+                position_embeddings,
+                n_experts = args.nexperts,
+                n_activated = args.nactivated,
+                n_shared = args.nshared,
+                args = args
+            )
+        else:
+            moe_out = construct_moe(layer, 
+                carve_inp, 
+                attention_mask, 
+                position_ids,
+                position_embeddings,
+                n_experts = args.nexperts,
+                n_activated = args.nactivated,
+                n_shared = args.nshared,
+                args = args
+            )
         carve_inp = moe_out
     
     tick_1 = time.time()
@@ -197,7 +216,7 @@ def cmoe_sequential(model, dataloader, args):
     datasets = ['wikitext2', 'c4-new']
     for dataset in datasets:
         dataloader, testloader = get_loaders(
-            dataset, seed=args.seed, model=args.model, seqlen=model.seqlen, bsz = args.carve_bsz
+            dataset, seed=args.seed, tokenizer=tokenizer, seqlen=model.seqlen, bsz = args.carve_bsz
         )
         print(dataset)
         eval_set = dataset
@@ -214,7 +233,7 @@ def cmoe_sequential(model, dataloader, args):
                 layer.mlp.cus_training = True
 
         model.cuda()
-        model = simple_sft(model, args, epoch = args.epoch)
+        model = simple_sft(model, tokenizer, args, epoch = args.epoch)
 
         for layer in layers:
             layer.mlp.cus_training = False
@@ -227,7 +246,7 @@ def cmoe_sequential(model, dataloader, args):
         datasets = ['wikitext2', 'c4-new']
         for dataset in datasets:
             dataloader, testloader = get_loaders(
-                dataset, seed=args.seed, model=args.model, seqlen=model.seqlen, bsz = args.carve_bsz
+                dataset, seed=args.seed, tokenizer=tokenizer, seqlen=model.seqlen, bsz = args.carve_bsz
             )
             print(dataset)
             eval_set = dataset
