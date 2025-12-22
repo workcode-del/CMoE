@@ -1,3 +1,4 @@
+import math
 import random
 import torch
 import torch.nn as nn
@@ -17,10 +18,10 @@ import lap
 
 
 @torch.no_grad()
-def analyze_neuron_activations(scores: torch.Tensor,
-                             K: int = 10,
-                             plot_results: bool = False,
+def analyze_neuron_activations(scores: torch.Tensor, plot_results: bool = False,
                              save_path: Optional[str] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    K = max(1, math.ceil(scores.shape[-1] * 0.1))  # Top 10% neurons 
+    print("K (top neurons per sample):", scores.shape, K)
 
     scores = scores.detach().cpu()
     batch_size, seq_len, inter_size = scores.shape
@@ -34,7 +35,7 @@ def analyze_neuron_activations(scores: torch.Tensor,
         abs_values = sample_values.abs().float()
 
         # Get indices of top-k absolute values
-        _, top_indices = torch.topk(abs_values, k=K)
+        top_values, top_indices = torch.topk(abs_values, k=K)
         activation_markers[i, top_indices] = 1.0
 
     # Sum up activations across all samples
@@ -150,10 +151,10 @@ def construct_experts_k_means(
 
         for i in range(k):
             repeated_distances[:, i*cluster_size:(i+1)*cluster_size] = distances_np[:, i:i+1]
-        cost, col_ind, row_ind = lap.lapjv(repeated_distances)
+        cost, row_ind, col_ind = lap.lapjv(repeated_distances)
 
-        assignments = torch.tensor(col_ind // cluster_size)
-        # print("Assignments shape, row_ind, col_ind, cluster_size, cost:", assignments.shape, row_ind, col_ind, cluster_size, cost)
+        assignments = torch.tensor(row_ind // cluster_size)
+        print("Assignments shape, row_ind, col_ind, cluster_size, cost:", assignments.shape, row_ind, col_ind, cluster_size, cost)
 
         if prev_assignments is not None and torch.all(assignments == prev_assignments):
             break
@@ -223,7 +224,7 @@ def construct_moe(layer, inp, attention_mask, position_ids, position_embeddings,
 
     # Calculate activation markers, activation rates
     # print(scores_all.shape)
-    counts, rates, markers = analyze_neuron_activations(scores_all, K=args.k_act, plot_results=False, save_path=f'./plot/scores_analysis_{layer.self_attn.layer_idx}.png')
+    counts, rates, markers = analyze_neuron_activations(scores_all, plot_results=False, save_path=f'./plot/scores_analysis_{layer.self_attn.layer_idx}.png')
 
     # 可视化激活率
     # plot_activation_rates(counts, rates, save_path=f'./plot/activation_rates_{layer.self_attn.layer_idx}.png')
@@ -355,7 +356,7 @@ def construct_moe_from_existing(layer, inp, attention_mask, position_ids, positi
     embedding_size = hidden_states.shape[2]
     
     # Calculate activation markers, activation rates
-    counts, rates, markers = analyze_neuron_activations(all_scores, K=args.k_act, plot_results=True, save_path=f'./plot/scores_analysis_{layer.self_attn.layer_idx}.png')
+    counts, rates, markers = analyze_neuron_activations(all_scores, plot_results=True, save_path=f'./plot/scores_analysis_{layer.self_attn.layer_idx}.png')
     
     # Construct new experts from the reconstructed dense weights
     expert_groups, representative_indices = construct_experts_k_means(
