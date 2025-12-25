@@ -420,8 +420,10 @@ def construct_moe_from_existing(layer, layer_idx, inp, attention_mask, position_
         else:
             moe_out, _ = layer.mlp(hidden_states)
     else:
-        moe_out = moe(hidden_states)
-        # moe_out = layer.mlp(hidden_states)
+        if layer_idx >= reconstruct_start_layer:
+            moe_out = moe(hidden_states)
+        else:
+            moe_out = layer.mlp(hidden_states)
     
     moe_out = moe_out + residual
     if layer_idx >= reconstruct_start_layer:
