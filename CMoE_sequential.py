@@ -116,6 +116,7 @@ def cmoe_ppl_eval(model, testloader, eval_set, args):
         neg_log_likelihood = loss.float() * model.seqlen
         nlls.append(neg_log_likelihood)
     
+    # print(nlls)
     ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * model.seqlen))
     print("ppl: ", ppl.item())
     model.config.use_cache = use_cache
@@ -168,6 +169,8 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
     attention_mask = cache['attention_mask']
     position_ids = cache['position_ids']
     position_embeddings = cache['position_embeddings']
+    # print("position_embeddings:", position_embeddings)
+    # print(cache)
 
     print('Ready.')
     # model.cuda()
@@ -179,7 +182,7 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
   
     # MoE Carving
     carve_inp = copy.deepcopy(inp)
-    for layer in tqdm(layers, desc = 'Carving MoE layers...'):
+    for layer_idx, layer in tqdm(enumerate(layers), desc = 'Carving MoE layers...'):
         moe_model_flag = hasattr(layer.mlp, 'gate') or hasattr(layer.mlp, 'experts')
         # if moe_model_flag:
         #     print("The model is already a MoE model. Proceeding to split experts. ")
@@ -187,6 +190,7 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
         #     print("The model is a dense model. Proceeding to carve MoE layers. ")
         if moe_model_flag:
             moe_out = construct_moe_from_existing(layer, 
+                layer_idx,
                 carve_inp, 
                 attention_mask, 
                 position_ids,
@@ -198,6 +202,7 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
             )
         else:
             moe_out = construct_moe(layer, 
+                layer_idx,
                 carve_inp, 
                 attention_mask, 
                 position_ids,

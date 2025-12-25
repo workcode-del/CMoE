@@ -189,7 +189,7 @@ def construct_experts_k_means(
 
 
 @torch.no_grad()
-def construct_moe(layer, inp, attention_mask, position_ids, position_embeddings, n_experts, n_activated, n_shared, args):
+def construct_moe(layer, layer_idx, inp, attention_mask, position_ids, position_embeddings, n_experts, n_activated, n_shared, args):
 
     device = next(layer.parameters()).device
     
@@ -279,41 +279,8 @@ def construct_moe(layer, inp, attention_mask, position_ids, position_embeddings,
 
     return moe_out
 
-@torch.no_grad()
-def construct_moe_from_existing(layer, inp, attention_mask, position_ids, position_embeddings, n_experts, n_activated, n_shared, args):
+def reconstrut_moe(layer, hidden_states, n_experts, n_activated, slice_expert_num, device, args):
 
-    device = next(layer.parameters()).device
-    
-    slice_expert_num = n_experts // len(layer.mlp.experts)
-    assert slice_expert_num * len(layer.mlp.experts) == n_experts, "n_experts must be multiple of existing expert num"
-    
-    print(f"Converting existing MoE layer with {len(layer.mlp.experts)} experts and {int(hasattr(layer.mlp, 'shared_expert'))} shared experts \
-           to {n_experts} experts")
-    
-    # Forward attention
-    inp = inp.to(device)
-    if attention_mask is not None:
-        attention_mask = attention_mask.to(device)
-    
-    if position_ids is not None:
-        position_ids = position_ids.to(device)
-    
-    residual = inp
-    hidden_states = layer.input_layernorm(inp)
-    hidden_states = layer.self_attn(
-        hidden_states=hidden_states, 
-        attention_mask=attention_mask, 
-        position_ids=position_ids,
-        position_embeddings=position_embeddings)[0]
-    hidden_states = residual + hidden_states
-    residual = hidden_states
-    hidden_states = layer.post_attention_layernorm(hidden_states)
-    h_pre = hidden_states
-    
-    # print(hidden_states.shape)
-    # print(layer.mlp.experts)
-
-    # Get original MoE structure information
     ori_expert_num = len(layer.mlp.experts)
     ori_up_proj_size = layer.mlp.experts[0].up_proj.weight.shape[0]
     ori_hidden_size = hidden_states.shape[2]
@@ -323,7 +290,7 @@ def construct_moe_from_existing(layer, inp, attention_mask, position_ids, positi
     new_router = Router(ori_hidden_size, n_experts, n_activated, bias_speed=args.bias_speed)
     # new_router.classifier.weight.data = torch.zeros(ori_hidden_size, n_experts)
     new_router.gate.weight.data = torch.zeros(n_experts, ori_hidden_size).to(torch.bfloat16).to(device)
-    new_router.classifier.weight.data = torch.ones(n_experts, ori_hidden_size).to(torch.bfloat16).to(device)
+    new_router.classifier = None
     ori_router_gate = layer.mlp.gate.weight
     total_neurons_processed = 0
 
@@ -334,8 +301,8 @@ def construct_moe_from_existing(layer, inp, attention_mask, position_ids, positi
         print(f"\nProcessing original expert {expert_idx} / {ori_expert_num}")
         
         # Get scores for this specific expert
-        h = expert.act_fn(F.linear(F.normalize(h_pre, p=2, dim=-1), F.normalize(expert.gate_proj.weight, p=2, dim=1)))
-        h = h * F.linear(F.normalize(h_pre, p=2, dim=-1), F.normalize(expert.up_proj.weight, p=2, dim=1))
+        h = expert.act_fn(F.linear(F.normalize(hidden_states, p=2, dim=-1), F.normalize(expert.gate_proj.weight, p=2, dim=1)))
+        h = h * F.linear(F.normalize(hidden_states, p=2, dim=-1), F.normalize(expert.up_proj.weight, p=2, dim=1))
         expert_scores = h.to('cpu')
         
         # print(f"Expert {expert_idx} scores shape: {expert_scores.shape}")
@@ -364,6 +331,7 @@ def construct_moe_from_existing(layer, inp, attention_mask, position_ids, positi
                 down_proj_weights = []
                 
                 print(f"Creating new expert with {len(group_indices)} neurons from original expert {expert_idx}")
+                # group_indices = [i for i in range(1024)]
                 for global_idx in group_indices:    
                     gate_proj_weights.append(layer.mlp.experts[expert_idx].gate_proj.weight.data[global_idx, :])
                     up_proj_weights.append(layer.mlp.experts[expert_idx].up_proj.weight.data[global_idx, :])
@@ -390,28 +358,74 @@ def construct_moe_from_existing(layer, inp, attention_mask, position_ids, positi
         new_router_gate = expanded_gate * core_gate_weights
         print(new_router.gate.weight.shape)
         new_router.gate.weight.data[expert_idx * slice_expert_num:(expert_idx + 1) * slice_expert_num, :] = new_router_gate
+        # new_router.gate.weight.data[expert_idx * slice_expert_num:(expert_idx + 1) * slice_expert_num, :] = expanded_gate
         new_router.gate.weight.to(device)
     
     # Now handle shared experts if needed
     print(f"\nTotal neurons processed: {total_neurons_processed}")
     print(f"Total new experts created from original experts: {len(all_new_experts)}")
 
-    # MoE
+    return total_neurons_processed, all_new_experts, new_router
+
+@torch.no_grad()
+def construct_moe_from_existing(layer, layer_idx, inp, attention_mask, position_ids, position_embeddings, n_experts, n_activated, n_shared, args):
+
+    device = next(layer.parameters()).device
+    
+    slice_expert_num = n_experts // len(layer.mlp.experts)
+    assert slice_expert_num * len(layer.mlp.experts) == n_experts, "n_experts must be multiple of existing expert num"
+    
+    print(f"Converting existing {layer_idx} MoE layer with {len(layer.mlp.experts)} experts and {int(hasattr(layer.mlp, 'shared_expert'))} shared experts \
+           to {n_experts} experts")
+    
+    # Forward attention
+    inp = inp.to(device)
+    if attention_mask is not None:
+        attention_mask = attention_mask.to(device)
+    
+    if position_ids is not None:
+        position_ids = position_ids.to(device)
+    
+    residual = inp
+    hidden_states = layer.input_layernorm(inp)
+    hidden_states = layer.self_attn(
+        hidden_states=hidden_states, 
+        attention_mask=attention_mask, 
+        position_ids=position_ids,
+        position_embeddings=position_embeddings)[0]
+    hidden_states = residual + hidden_states
+    residual = hidden_states
+    hidden_states = layer.post_attention_layernorm(hidden_states)
+    
+    # print(hidden_states.shape)
+    # print(layer.mlp.experts)
+
     return_router_info = 'olmoe' in args.model.lower()
-    moe = MoE(ori_hidden_size, total_neurons_processed, len(all_new_experts), n_shared, n_activated, return_router_info)
-    moe.gate = new_router
-    moe.experts = all_new_experts
-    moe.shared_experts = None
-    moe.cus_training = False
+
+    reconstruct_start_layer = 0
+    if layer_idx >= reconstruct_start_layer:
+        total_neurons_processed, all_new_experts, new_router = reconstrut_moe(layer, hidden_states, n_experts, n_activated, slice_expert_num, device, args)
+
+        # MoE
+        moe = MoE(hidden_states.shape[2], total_neurons_processed, len(all_new_experts), n_shared, n_activated, return_router_info)
+        moe.gate = new_router
+        moe.experts = all_new_experts
+        moe.shared_experts = None
+        moe.cus_training = False
 
     # Test the new MoE
     if return_router_info:
-        moe_out, _ = moe(h_pre)
+        if layer_idx >= reconstruct_start_layer:
+            moe_out, _ = moe(hidden_states)
+        else:
+            moe_out, _ = layer.mlp(hidden_states)
     else:
-        moe_out = moe(h_pre)
+        moe_out = moe(hidden_states)
+        # moe_out = layer.mlp(hidden_states)
     
     moe_out = moe_out + residual
-    layer.mlp = moe
+    if layer_idx >= reconstruct_start_layer:
+        layer.mlp = moe
     
     print("moe_out")
     return moe_out

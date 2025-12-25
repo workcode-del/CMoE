@@ -53,19 +53,21 @@ class Router(nn.Module):
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.classifier is None:
-            scores = self.act_fn(self.gate(x)).abs()
+            # scores = self.act_fn(self.gate(x)).abs()
+            scores = self.gate(x)
         else:
             scores = (self.classifier(x) * self.act_fn(self.gate(x))).abs() 
+            # scores = self.gate(x)
 
         scores = scores.softmax(dim=-1, dtype=torch.float32)
-        original_scores = scores
+        # original_scores = scores
         
         scores = scores + self.extra_bias.to(x.device)[None, :]
 
-        indices = torch.topk(scores, self.topk, dim=-1)[1]
+        weights, indices = torch.topk(scores, self.topk, dim=-1)
 
-        original_scores = 1 + original_scores*self.extra_scale.to(x.device)
-        weights = original_scores.gather(1, indices)
+        # original_scores = 1 + original_scores*self.extra_scale.to(x.device)
+        # weights = original_scores.gather(1, indices)
 
         return weights.type_as(x), indices
 
@@ -93,8 +95,8 @@ class MoE(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         shape = x.size()
         x = x.view(-1, self.dim)
-        # print(x.device, self.gate.gate.weight.device)
         weights, indices = self.gate(x)
+        
         y = torch.zeros_like(x)
         counts = torch.bincount(indices.flatten(), minlength=self.n_routed_experts)
         if self.cus_training:
