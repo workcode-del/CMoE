@@ -326,7 +326,7 @@ def reconstrut_moe(layer, hidden_states, n_experts, n_activated, slice_expert_nu
         # print(f"Expert {expert_idx} scores shape: {expert_scores.shape}")
 
         # Calculate activation markers and rates for this expert's neurons
-        counts, rates, markers = analyze_neuron_activations(expert_scores, plot_results=False, sparsity=0.01)
+        counts, rates, markers = analyze_neuron_activations(expert_scores, plot_results=False, sparsity=0.1)
         
         # Determine number of new experts to create from this original expert
         # We'll split each original expert into split_factor new experts
@@ -341,7 +341,7 @@ def reconstrut_moe(layer, hidden_states, n_experts, n_activated, slice_expert_nu
         expert_groups = expert_groups[1:]
         core_gate_weights = []
         # Create new experts for this original expert
-        for group_indices in expert_groups:
+        for ii, group_indices in enumerate(expert_groups):
             expert_mlp = LlamaMLP(ori_hidden_size, len(group_indices)).to(device)
             
             with torch.no_grad():
@@ -364,9 +364,9 @@ def reconstrut_moe(layer, hidden_states, n_experts, n_activated, slice_expert_nu
             all_new_experts.append(expert_mlp)
             total_neurons_processed += len(group_indices)
 
-            gate_proj_weights = torch.stack(gate_proj_weights[:1])
-            reduced_weights = torch.mean(gate_proj_weights, dim=0)
-            core_gate_weights.append(reduced_weights)
+            # gate_proj_weights = torch.stack(gate_proj_weights[:1])
+            # reduced_weights = torch.mean(gate_proj_weights, dim=0)
+            # core_gate_weights.append(reduced_weights)
  
         # Router
         # core_weights = []
@@ -375,7 +375,7 @@ def reconstrut_moe(layer, hidden_states, n_experts, n_activated, slice_expert_nu
         #     core_weights.append(layer.mlp.experts[expert_idx].up_proj.weight.data[core_neuron, :])
         #     core_gate_weights.append(layer.mlp.experts[expert_idx].gate_proj.weight.data[core_neuron, :])
 
-        core_gate_weights = F.normalize(torch.stack(core_gate_weights).to(dtype=torch.bfloat16).to(device), p=2, dim=1)
+        # core_gate_weights = F.normalize(torch.stack(core_gate_weights).to(dtype=torch.bfloat16).to(device), p=2, dim=1)
         expanded_gate = ori_router_gate.data[expert_idx, :].unsqueeze(0).repeat(slice_expert_num, 1).to(device)
 
         # alpha = 0.1
