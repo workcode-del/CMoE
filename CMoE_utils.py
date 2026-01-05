@@ -182,8 +182,7 @@ def analyze_expert_profile(layer, hidden_states, topk, save_path: Optional[str] 
         plt.savefig(save_path)
         plt.close()
 
-    print(activation_counts, ranks, drop_expert_nums)
-
+    # print(activation_counts, ranks, drop_expert_nums)
     return activation_counts, ranks, drop_expert_nums
 
 @torch.no_grad()
@@ -405,8 +404,7 @@ def reconstrut_moe(layer, hidden_states, n_experts, n_activated, slice_expert_nu
     ori_expert_activate_num = layer.mlp.top_k
     # print(f"Original expert activate num: {ori_expert_activate_num}")
     ori_hidden_size = hidden_states.shape[2]
-    print(f"Original expert num: {ori_expert_num}, expert activate num: {ori_expert_activate_num}, \
-           up_proj_size per expert: {ori_up_proj_size}, hidden_size: {ori_hidden_size}")
+    print(f"Original expert num: {ori_expert_num}, expert activate num: {ori_expert_activate_num}, up_proj_size per expert: {ori_up_proj_size}, hidden_size: {ori_hidden_size}")
     ori_router_gate = layer.mlp.gate.weight
 
     # expert_profile = analyze_expert_profile(layer, hidden_states, ori_expert_activate_num, save_path=f'./plot/expert_profile_analysis_{layer.self_attn.layer_idx}.png')
@@ -416,6 +414,7 @@ def reconstrut_moe(layer, hidden_states, n_experts, n_activated, slice_expert_nu
     
     avg_drop_expert_num = 1
     new_expert_num = ori_expert_num * (slice_expert_num - avg_drop_expert_num) 
+    scaling_factor = slice_expert_num - avg_drop_expert_num
     sparsity = 0.1
 
     new_router = Router(ori_hidden_size, new_expert_num, n_activated, bias_speed=args.bias_speed)
@@ -448,9 +447,9 @@ def reconstrut_moe(layer, hidden_states, n_experts, n_activated, slice_expert_nu
         )
 
         drop_expert_num = drop_expert_nums[expert_idx] * avg_drop_expert_num
-        scaling_factor = slice_expert_num - drop_expert_num
+        remain_expert_num = slice_expert_num - drop_expert_num
 
-        expert_groups = expert_groups[1:scaling_factor + 1]
+        expert_groups = expert_groups[1:remain_expert_num + 1]
         # Create new experts for this original expert
         for ii, group_indices in enumerate(expert_groups):
             expert_mlp = LlamaMLP(ori_hidden_size, len(group_indices)).to(device)
@@ -472,16 +471,16 @@ def reconstrut_moe(layer, hidden_states, n_experts, n_activated, slice_expert_nu
             all_new_experts.append(expert_mlp)
             total_neurons_processed += len(group_indices)
 
-        expanded_gate = ori_router_gate.data[expert_idx, :].unsqueeze(0).repeat(scaling_factor, 1).to(device)
+        expanded_gate = ori_router_gate.data[expert_idx, :].unsqueeze(0).repeat(remain_expert_num, 1).to(device)
 
         new_router_gate = expanded_gate
         # decay_gamma = 0.01
         # for i in range(scaling_factor):
         #     new_router_gate[i, :] = (1 - i * decay_gamma) * expanded_gate[i, :]
 
-        print(gate_start_idx, drop_expert_num, scaling_factor, expanded_gate.shape)
-        new_router.gate.weight.data[gate_start_idx: gate_start_idx + scaling_factor, :] = new_router_gate
-        gate_start_idx += scaling_factor
+        # print(gate_start_idx, drop_expert_num, scaling_factor, expanded_gate.shape)
+        new_router.gate.weight.data[gate_start_idx: gate_start_idx + remain_expert_num, :] = new_router_gate
+        gate_start_idx += remain_expert_num
     
     new_router.gate.weight.to(device)
     
@@ -490,7 +489,7 @@ def reconstrut_moe(layer, hidden_states, n_experts, n_activated, slice_expert_nu
     print("sparsity", sparsity)
     # Now handle shared experts if needed
     print(f"\nTotal neurons processed: {total_neurons_processed}")
-    print(f"Total new experts created from original experts: {len(all_new_experts)}")
+    print(f"Total new experts created from original experts: {len(all_new_experts)}, Gate router num: {gate_start_idx}")
 
     return total_neurons_processed, all_new_experts, new_router
 
@@ -529,7 +528,7 @@ def construct_moe_from_existing(layer, layer_idx, inp, attention_mask, position_
 
     return_router_info = 'olmoe' in args.model.lower()
 
-    reconstruct_start_layer = 8
+    reconstruct_start_layer = 0
     reconstruct_end_layer = 15
     if layer_idx >= reconstruct_start_layer and layer_idx <= reconstruct_end_layer:
         total_neurons_processed, all_new_experts, new_router = reconstrut_moe(layer, hidden_states, n_experts, n_activated, slice_expert_num, device, args)
@@ -557,5 +556,5 @@ def construct_moe_from_existing(layer, layer_idx, inp, attention_mask, position_
     if layer_idx >= reconstruct_start_layer and layer_idx <= reconstruct_end_layer:
         layer.mlp = moe
     
-    print("moe_out")
+    # print("moe_out")
     return moe_out
