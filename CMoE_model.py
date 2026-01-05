@@ -59,9 +59,8 @@ class Router(nn.Module):
             scores = (self.classifier(x) * self.act_fn(self.gate(x))).abs() 
             # scores = self.gate(x)
 
+        # print(scores.shape)
         scores = scores.softmax(dim=-1, dtype=torch.float32)
-        # original_scores = scores
-        
         scores = scores + self.extra_bias.to(x.device)[None, :]
 
         weights, indices = torch.topk(scores, self.topk, dim=-1)
@@ -96,7 +95,10 @@ class MoE(nn.Module):
         shape = x.size()
         x = x.view(-1, self.dim)
         weights, indices = self.gate(x)
-        
+        # print(weights.shape, indices.shape)
+        # print(weights[0])
+        # print(indices[0])
+
         y = torch.zeros_like(x)
         counts = torch.bincount(indices.flatten(), minlength=self.n_routed_experts)
         if self.cus_training:
