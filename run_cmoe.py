@@ -121,6 +121,10 @@ if __name__ == '__main__':
     parser.add_argument(        '--prefix', type=str, default=None,
         help='Prefix the results folder if needed.'
     )
+    parser.add_argument(        '--reconstruct_start_layer', type=int, default=0,
+    )
+    parser.add_argument(        '--reconstruct_end_layer', type=int, default=15,
+    )
 
     args = parser.parse_args()
     

@@ -34,7 +34,7 @@ def cmoe_ppl_eval(model, testloader, eval_set, args):
             raise ValueError
     # Explicitly move embedding layers to cuda:0
     embedding_device = next(model.model.embed_tokens.parameters()).device
-    print('Embedding device:', embedding_device)
+    # print('Embedding device:', embedding_device)
  
     first_layer_device = next(layers[0].parameters()).device
     layers[0] = Catcher(layers[0].to(first_layer_device))
@@ -118,7 +118,7 @@ def cmoe_ppl_eval(model, testloader, eval_set, args):
     
     # print(nlls)
     ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * model.seqlen))
-    print("ppl: ", ppl.item())
+    print(f'ppl: {ppl.item():.4f}')
     model.config.use_cache = use_cache
 
     return ppl.item()
