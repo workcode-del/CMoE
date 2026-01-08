@@ -2,3 +2,4 @@ __pycache__/
 plot/
 result_logs/
 test/
+model/

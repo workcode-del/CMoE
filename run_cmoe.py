@@ -14,7 +14,9 @@ from CMoE_model import *
 from CMoE_sequential import *
 from zero_eval import *
 from sft_utils import simple_sft
-from transformers import AutoTokenizer 
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from llmcompress import apply_quantization
+from eval_cmoe import cmoe_ppl_eval
 
 def get_llama(model):
     def skip(*args, **kwargs):
@@ -49,9 +51,39 @@ def get_olmoe(model):
     # torch.nn.init.normal_ = skip
     from transformers import OlmoeForCausalLM
 
-    model = OlmoeForCausalLM.from_pretrained(model, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, device_map = 'auto')
+    # model = OlmoeForCausalLM.from_pretrained(model, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, device_map = 'auto')
+    model = AutoModelForCausalLM.from_pretrained(model, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, device_map = 'auto')
+
     model.seqlen = 2048
     return model
+
+def get_deepseek_v2_lite_gptq(model_path):
+    from auto_gptq import AutoGPTQForCausalLM
+
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    tokenizer.pad_token = tokenizer.eos_token
+
+    # model = AutoGPTQForCausalLM.from_pretrained(
+    #     model_path,
+    #     torch_dtype=torch.float16,
+    #     low_cpu_mem_usage=True,
+    #     device_map="auto",
+    #     trust_remote_code=True,
+    #     quantize_config=None,
+    #     use_safetensors=True
+    # )
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        torch_dtype=torch.float16,
+        low_cpu_mem_usage=True,
+        device_map='auto',
+        trust_remote_code=True
+    )
+
+    model.seqlen = 2048
+
+    return model, tokenizer
 
 def save_results(file_name, results):
     if results is not str:
@@ -133,13 +165,16 @@ if __name__ == '__main__':
     print("Loading model: ", args.model.lower())
     if 'llava' in args.model.lower():
         model = get_llava(args.model)
+        tokenizer = AutoTokenizer.from_pretrained(args.model)
     elif 'olmoe' in args.model.lower():
         model = get_olmoe(args.model)
+        tokenizer = AutoTokenizer.from_pretrained(args.model)
+    elif 'deepseek-v2-lite-gptq' in args.model.lower():
+        model, tokenizer = get_deepseek_v2_lite_gptq(args.model)
     else:
         model = get_llama(args.model)
+        tokenizer = AutoTokenizer.from_pretrained(args.model)
     model.eval()
-    
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
 
     dataloader, testloader = get_loaders(
         args.dataset, 
@@ -159,6 +194,34 @@ if __name__ == '__main__':
     # print(f"Original model ppl on {args.dataset}: {ori_ppl}")
 
     carved_model, tick_1, tick_2, pre_ppl, ppl = cmoe_sequential(model, tokenizer, dataloader, args)
+
+    quant_to_gptq = False
+    if quant_to_gptq:
+        DATASET_ID = "HuggingFaceH4/ultrachat_200k"
+        DATASET_SPLIT = "train_sft"
+        # Select number of samples. 512 samples is a good place to start.
+        # Increasing the number of samples can improve accuracy.
+        NUM_CALIBRATION_SAMPLES = 512
+        MAX_SEQUENCE_LENGTH = 2048
+
+        apply_quantization(carved_model, tokenizer, DATASET_ID, DATASET_SPLIT, NUM_CALIBRATION_SAMPLES, MAX_SEQUENCE_LENGTH)
+
+        quant_save_dir = "quantized_olmoe_cmoe_model/"
+        carved_model.save_pretrained(quant_save_dir, save_compressed=True)
+        tokenizer.save_pretrained(quant_save_dir)
+
+        quant_ppl = []
+        datasets = ['wikitext2', 'c4-new']
+        for dataset in datasets:
+            dataloader, testloader = get_loaders(
+                dataset, seed=args.seed, tokenizer=tokenizer, seqlen=model.seqlen, bsz = args.carve_bsz
+            )
+            print(dataset)
+            eval_set = dataset
+            ppl_i = cmoe_ppl_eval(model, testloader, eval_set, args)
+            quant_ppl.append(f"{dataset}: {ppl_i}")
+            print("Quantized model ppl: ", ppl_i)
+
     rt_construct = tick_1 - tick
     extra_time = tick_2 - tick_1
     rt = time.time() - tick - extra_time

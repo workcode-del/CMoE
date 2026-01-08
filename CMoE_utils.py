@@ -7,15 +7,47 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
 import numpy as np
-
+from tqdm import tqdm
 from typing import Optional, Tuple, List
 
 from CMoE_model import *
+from CMoE_quant_model import *
 
-import json
+DEV = torch.device('cuda:0')
 
-import lap
+@torch.no_grad()
+def cmoe_ppl_eval(model, testloader, eval_set, args):
+    use_cache = model.config.use_cache
+    model.config.use_cache = False
+    
+    testenc = testloader.input_ids
+    # print("testenc.shape: ", testenc.shape)
+    nsamples = testenc.shape[1] // model.seqlen
+    # nsamples = 64
+    print('ppl evaluation samples:', nsamples)
 
+    nlls = []
+    
+    for i in tqdm(range(nsamples), desc='Evaluating...'):
+        batch = testenc[:, (i * model.seqlen):((i + 1) * model.seqlen)].to(DEV)
+        target_ids = batch.clone()
+        
+        with torch.no_grad():
+            outputs = model(batch)
+            shift_logits = outputs.logits[:, :-1, :].contiguous()
+            shift_labels = target_ids[:, 1:].contiguous()
+
+            loss_fct = nn.CrossEntropyLoss()
+            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+            neg_log_likelihood = loss.float() * model.seqlen
+            nlls.append(neg_log_likelihood)
+    
+    # print(nlls)
+    ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * model.seqlen))
+    print(f'ppl: {ppl.item():.4f}')
+    model.config.use_cache = use_cache
+
+    return ppl.item()
 
 @torch.no_grad()
 def analyze_neuron_activations(scores: torch.Tensor, save_path: Optional[str] = None, sparsity = 0.1) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -240,6 +272,8 @@ def construct_experts_k_means(
     max_iters = 10
     prev_cost = -1
 
+    import lap
+
     for iteration in range(max_iters):
         
         distances = torch.cdist(markers[:, remaining_indices_list].T, centroids.T, p=1) 
@@ -403,7 +437,7 @@ def construct_experts_by_rates(
     
     return expert_groups, None
 
-def reconstrut_moe(layer, hidden_states, n_experts, n_activated, slice_expert_num, if_quantized, device, args):
+def reconstruct_moe(layer, hidden_states, n_experts, n_activated, slice_expert_num, if_quantized, device, args):
 
     ori_expert_num = len(layer.mlp.experts)
     ori_expert_activate_num = layer.mlp.top_k
@@ -550,14 +584,17 @@ def construct_moe_from_existing(layer, layer_idx, inp, attention_mask, position_
         if if_quantized:
             from compressed_tensors.quantization.quant_config import QuantizationStatus
             if_quantized = if_quantized and layer.mlp.gate.quantization_status == QuantizationStatus.COMPRESSED
-        total_neurons_processed, all_new_experts, new_router = reconstrut_moe(layer, hidden_states, n_experts, n_activated, slice_expert_num, if_quantized, device, args)
+        total_neurons_processed, all_new_experts, new_router = reconstruct_moe(layer, hidden_states, n_experts, n_activated, slice_expert_num, if_quantized, device, args)
 
         # MoE
-        moe = MoE(hidden_states.shape[2], total_neurons_processed, len(all_new_experts), n_shared, n_activated, return_router_info)
-        moe.gate = new_router
-        moe.experts = all_new_experts
-        moe.shared_experts = None
-        moe.cus_training = False
+        if not if_quantized:
+            moe = layer.mlp
+        else:
+            moe = MoE(hidden_states.shape[2], total_neurons_processed, len(all_new_experts), n_shared, n_activated, return_router_info)
+            moe.gate = new_router
+            moe.experts = all_new_experts
+            moe.shared_experts = None
+            moe.cus_training = False
 
     # Test the new MoE
     if return_router_info:
