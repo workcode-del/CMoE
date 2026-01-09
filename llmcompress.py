@@ -38,7 +38,7 @@ def apply_quantization(model, tokenizer, dataset_id, dataset_split, num_calibrat
     # Configure the quantization algorithm to run.
     #   * quantize the weights to 4 bit with GPTQ with a group size 128
     # recipe = GPTQModifier(targets="Linear", scheme="W4A16", ignore=["lm_head"])
-    recipe = GPTQModifier(targets="Linear", scheme="W8A16", ignore=["lm_head", "re:.*mlp.gate$", "re:.*mlp.experts.*.*_proj$"])
+    recipe = GPTQModifier(targets="Linear", scheme="W8A16", ignore=["lm_head"])
 
     # recipe = AWQModifier(ignore=["lm_head"], scheme="W4A16_ASYM", targets=["Linear"], duo_scaling="both")
     # recipe = AutoRoundModifier(targets="Linear", scheme="W4A16", ignore=["lm_head"], iters=200)
@@ -72,7 +72,7 @@ if __name__ == '__main__':
 
     # Select number of samples. 512 samples is a good place to start.
     # Increasing the number of samples can improve accuracy.
-    NUM_CALIBRATION_SAMPLES = 256
+    NUM_CALIBRATION_SAMPLES = 512
     MAX_SEQUENCE_LENGTH = 2048
 
     apply_quantization(model, tokenizer, DATASET_ID, DATASET_SPLIT, NUM_CALIBRATION_SAMPLES, MAX_SEQUENCE_LENGTH)

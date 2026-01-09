@@ -59,6 +59,7 @@ if __name__ == '__main__':
 
     ppl = []
     datasets = ['wikitext2', 'c4-new']
+    # datasets = ['wikitext2', ]
     for dataset in datasets:
         dataloader, testloader = get_loaders(
             dataset, seed=args.seed, tokenizer=tokenizer, seqlen=model.seqlen, bsz = 1

@@ -26,12 +26,31 @@ def cmoe_ppl_eval(model, testloader, eval_set, args):
     # nsamples = 64
     print('ppl evaluation samples:', nsamples)
 
+    def get_activation():
+        def hook(model, input, output):
+            isnan = torch.isnan(output)
+            whereisnan = torch.where(isnan)
+            if whereisnan[1].shape[0] > 0:
+                output[whereisnan] = 0.0
+                # print(whereisnan[1])
+        return hook
+
+    hooks = []
+    hook_handles = []
+    for i in range(model.config.num_experts):
+        hooks.append(model.model.layers[0].mlp.experts[i].up_proj)
+        hooks.append(model.model.layers[0].mlp.experts[i].gate_proj)
+    # hooks.append(model.model.layers[0].mlp.experts[38].act_fn)
+
+    # print(model)
     nlls = []
-    
     for i in tqdm(range(nsamples), desc='Evaluating...'):
         batch = testenc[:, (i * model.seqlen):((i + 1) * model.seqlen)].to(DEV)
         target_ids = batch.clone()
-        
+
+        for hook in hooks:
+            hook_handles.append(hook.register_forward_hook(get_activation()))
+
         with torch.no_grad():
             outputs = model(batch)
             shift_logits = outputs.logits[:, :-1, :].contiguous()
@@ -41,6 +60,9 @@ def cmoe_ppl_eval(model, testloader, eval_set, args):
             loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
             neg_log_likelihood = loss.float() * model.seqlen
             nlls.append(neg_log_likelihood)
+
+        for hook in hooks:
+            hook_handles.pop().remove()
     
     # print(nlls)
     ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * model.seqlen))
