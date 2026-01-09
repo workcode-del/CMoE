@@ -605,7 +605,7 @@ def construct_moe_from_existing(layer, layer_idx, inp, attention_mask, position_
         if_quantized = hasattr(layer.mlp.gate, 'quantization_status')
         if if_quantized:
             from compressed_tensors.quantization.quant_config import QuantizationStatus
-            if_quantized = if_quantized and layer.mlp.gate.quantization_status == QuantizationStatus.COMPRESSED
+            if_quantized = layer.mlp.gate.quantization_status == QuantizationStatus.COMPRESSED
         total_neurons_processed, all_new_experts, new_router = reconstruct_moe(layer, hidden_states, n_experts, n_activated, slice_expert_num, if_quantized, device, args)
 
         # MoE

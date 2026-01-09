@@ -37,8 +37,9 @@ def apply_quantization(model, tokenizer, dataset_id, dataset_split, num_calibrat
 
     # Configure the quantization algorithm to run.
     #   * quantize the weights to 4 bit with GPTQ with a group size 128
-    # recipe = GPTQModifier(targets="Linear", scheme="W4A16", ignore=["lm_head"])
-    recipe = GPTQModifier(targets="Linear", scheme="W8A16", ignore=["lm_head"])
+    recipe = GPTQModifier(targets="Linear", scheme="W4A16", ignore=["lm_head"])
+    # recipe = GPTQModifier(targets="Linear", scheme="W8A16", ignore=["lm_head", "re:.*layers\.(2|3|4|5|6|7|8|9|10|11|12|13|14|15)\..*"])
+    # recipe = GPTQModifier(targets="Linear", scheme="W8A16", ignore=["lm_head", "re:.*mlp.gate$", "re:.*mlp.experts.*.*_proj$"])
 
     # recipe = AWQModifier(ignore=["lm_head"], scheme="W4A16_ASYM", targets=["Linear"], duo_scaling="both")
     # recipe = AutoRoundModifier(targets="Linear", scheme="W4A16", ignore=["lm_head"], iters=200)
@@ -54,17 +55,23 @@ def apply_quantization(model, tokenizer, dataset_id, dataset_split, num_calibrat
     )
 
 if __name__ == '__main__':
-    # Select model and load it.
-    model_path = "OLMoE-1B-7B-0924-Instruct/"
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        'model', type=str,
+        help='Model to load; '
+    )
+    args = parser.parse_args()
 
     model = AutoModelForCausalLM.from_pretrained(
-            model_path,
+            args.model,
             torch_dtype=torch.float16,
             low_cpu_mem_usage=True,
             device_map='auto',
             trust_remote_code=True
         )
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
 
     # Select calibration dataset.
     DATASET_ID = "HuggingFaceH4/ultrachat_200k"
@@ -88,7 +95,7 @@ if __name__ == '__main__':
     print("==========================================\n\n")
 
     # Save to disk compressed.
-    SAVE_DIR = model_path.rstrip("/").split("/")[-1] + "-W8A16-GPTQ"
+    SAVE_DIR = args.model.rstrip("/").split("/")[-1] + "-W8A16-GPTQ"
     print(SAVE_DIR)
     model.save_pretrained(SAVE_DIR, save_compressed=True)
     tokenizer.save_pretrained(SAVE_DIR)

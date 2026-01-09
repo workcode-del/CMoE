@@ -194,6 +194,12 @@ if __name__ == '__main__':
     # print(f"Original model ppl on {args.dataset}: {ori_ppl}")
 
     carved_model, tick_1, tick_2, pre_ppl, ppl = cmoe_sequential(model, tokenizer, dataloader, args)
+    save_carved_model = True
+    if save_carved_model:
+        carved_save_dir = "model/carved_olmoe_cmoe_e" + str(args.nexperts) + "_a" + str(args.nactivated)
+        print(carved_model)
+        carved_model.save_pretrained(carved_save_dir)
+        tokenizer.save_pretrained(carved_save_dir)
 
     quant_to_gptq = False
     if quant_to_gptq:
@@ -206,7 +212,8 @@ if __name__ == '__main__':
 
         apply_quantization(carved_model, tokenizer, DATASET_ID, DATASET_SPLIT, NUM_CALIBRATION_SAMPLES, MAX_SEQUENCE_LENGTH)
 
-        quant_save_dir = "quantized_olmoe_cmoe_model/"
+        quant_save_dir = "model/quantized_olmoe_cmoe_"
+        print(carved_model)
         carved_model.save_pretrained(quant_save_dir, save_compressed=True)
         tokenizer.save_pretrained(quant_save_dir)
 
