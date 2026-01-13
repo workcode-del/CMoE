@@ -37,10 +37,11 @@ def cmoe_ppl_eval(model, testloader, eval_set, args):
 
     hooks = []
     hook_handles = []
-    for i in range(model.config.num_experts):
-        hooks.append(model.model.layers[0].mlp.experts[i].up_proj)
-        hooks.append(model.model.layers[0].mlp.experts[i].gate_proj)
-    # hooks.append(model.model.layers[0].mlp.experts[38].act_fn)
+    print(model, model.config)
+    if hasattr(model.config, 'num_experts'):
+        for i in range(model.config.num_experts):
+            hooks.append(model.model.layers[0].mlp.experts[i].up_proj)
+            hooks.append(model.model.layers[0].mlp.experts[i].gate_proj)
 
     # print(model)
     nlls = []

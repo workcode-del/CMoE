@@ -15,7 +15,109 @@ from zero_eval import *
 from sft_utils import simple_sft
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from llmcompress import apply_quantization
-from run_cmoe import *
+
+def get_llama(model):
+    def skip(*args, **kwargs):
+        pass
+    # torch.nn.init.kaiming_uniform_ = skip
+    # torch.nn.init.uniform_ = skip
+    # torch.nn.init.normal_ = skip
+    from transformers import LlamaForCausalLM
+    model = LlamaForCausalLM.from_pretrained(model, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, device_map = 'auto')
+    model.seqlen = 2048
+    # model.seqlen = 4096
+    return model
+
+def get_llava(model):
+    def skip(*args, **kwargs):
+        pass
+    # torch.nn.init.kaiming_uniform_ = skip
+    # torch.nn.init.uniform_ = skip
+    # torch.nn.init.normal_ = skip
+
+    from llava.model import LlavaLlamaForCausalLM
+
+    model = LlavaLlamaForCausalLM.from_pretrained(model, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, device_map = 'auto')
+    model.seqlen = 2048
+    return model
+
+def get_olmoe(model):
+    def skip(*args, **kwargs):
+        pass
+    # torch.nn.init.kaiming_uniform_ = skip
+    # torch.nn.init.uniform_ = skip
+    # torch.nn.init.normal_ = skip
+    from transformers import OlmoeForCausalLM
+
+    # model = OlmoeForCausalLM.from_pretrained(model, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, device_map = 'auto')
+    model = AutoModelForCausalLM.from_pretrained(model, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, device_map = 'auto')
+
+    model.seqlen = 2048
+    return model
+
+def get_deepseek_v2_lite_gptq(model_path):
+    from auto_gptq import AutoGPTQForCausalLM
+
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    tokenizer.pad_token = tokenizer.eos_token
+
+    # model = AutoGPTQForCausalLM.from_pretrained(
+    #     model_path,
+    #     torch_dtype=torch.float16,
+    #     low_cpu_mem_usage=True,
+    #     device_map="auto",
+    #     trust_remote_code=True,
+    #     quantize_config=None,
+    #     use_safetensors=True
+    # )
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        torch_dtype=torch.float16,
+        low_cpu_mem_usage=True,
+        device_map='auto',
+        trust_remote_code=True
+    )
+
+    model.seqlen = 2048
+
+    return model, tokenizer
+
+def get_auto(model_path):
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path,
+        trust_remote_code=True
+    )
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        torch_dtype=torch.float16,
+        low_cpu_mem_usage=True,
+        device_map='auto',
+        trust_remote_code=True
+    )
+
+    model.seqlen = 2048
+
+    return model, tokenizer
+
+def load_model(model_path):
+    if 'llava' in model_path.lower():
+        model = get_llava(model_path)
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+    elif 'olmoe' in model_path.lower():
+        model = get_olmoe(model_path)
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+    elif 'deepseek-v2-lite' in model_path.lower():
+        model, tokenizer = get_deepseek_v2_lite_gptq(model_path)
+    elif 'llama' in model_path.lower():
+        model = get_llama(model_path)
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+    else:
+        model, tokenizer = get_auto(model_path)
+    model.eval()
+    return model, tokenizer
 
 if __name__ == '__main__':
     import argparse
@@ -35,18 +137,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     print("Loading model: ", args.model.lower())
-    if 'llava' in args.model.lower():
-        model = get_llava(args.model)
-        tokenizer = AutoTokenizer.from_pretrained(args.model)
-    elif 'olmoe' in args.model.lower():
-        model = get_olmoe(args.model)
-        tokenizer = AutoTokenizer.from_pretrained(args.model)
-    elif 'deepseek-v2-lite-gptq' in args.model.lower():
-        model, tokenizer = get_deepseek_v2_lite_gptq(args.model)
-    else:
-        model = get_llama(args.model)
-        tokenizer = AutoTokenizer.from_pretrained(args.model)
-    model.eval()
+    model, tokenizer = load_model(args.model)
 
     print("model: ", args.model)
 

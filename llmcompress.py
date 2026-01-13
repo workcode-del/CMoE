@@ -11,7 +11,7 @@ from llmcompressor.utils import dispatch_for_generation
 
 ### Code is from https://github.com/vllm-project/llm-compressor/blob/3f934a568e7b3e08f6ff61b1d8e073235aaf071f/examples/quantization_w4a16/llama3_example.py
 
-def apply_quantization(model, tokenizer, dataset_id, dataset_split, num_calibration_samples, max_sequence_length):
+def apply_quantization(model, tokenizer, recipe, dataset_id, dataset_split, num_calibration_samples, max_sequence_length):
     def preprocess(example):
         return {
             "text": tokenizer.apply_chat_template(
@@ -34,15 +34,6 @@ def apply_quantization(model, tokenizer, dataset_id, dataset_split, num_calibrat
     ds = ds.shuffle(seed=42)
     ds = ds.map(preprocess)
     ds = ds.map(tokenize, remove_columns=ds.column_names)
-
-    # Configure the quantization algorithm to run.
-    #   * quantize the weights to 4 bit with GPTQ with a group size 128
-    recipe = GPTQModifier(targets="Linear", scheme="W4A16", ignore=["lm_head"])
-    # recipe = GPTQModifier(targets="Linear", scheme="W8A16", ignore=["lm_head", "re:.*layers\.(2|3|4|5|6|7|8|9|10|11|12|13|14|15)\..*"])
-    # recipe = GPTQModifier(targets="Linear", scheme="W8A16", ignore=["lm_head", "re:.*mlp.gate$", "re:.*mlp.experts.*.*_proj$"])
-
-    # recipe = AWQModifier(ignore=["lm_head"], scheme="W4A16_ASYM", targets=["Linear"], duo_scaling="both")
-    # recipe = AutoRoundModifier(targets="Linear", scheme="W4A16", ignore=["lm_head"], iters=200)
 
     # Apply algorithms.
     oneshot(
@@ -68,7 +59,8 @@ if __name__ == '__main__':
             args.model,
             torch_dtype=torch.float16,
             low_cpu_mem_usage=True,
-            device_map='auto',
+            # device_map='auto',
+            device_map=None,
             trust_remote_code=True
         )
     tokenizer = AutoTokenizer.from_pretrained(args.model)
@@ -82,7 +74,23 @@ if __name__ == '__main__':
     NUM_CALIBRATION_SAMPLES = 512
     MAX_SEQUENCE_LENGTH = 2048
 
-    apply_quantization(model, tokenizer, DATASET_ID, DATASET_SPLIT, NUM_CALIBRATION_SAMPLES, MAX_SEQUENCE_LENGTH)
+    # Configure the quantization algorithm to run.
+    #   * quantize the weights to 4 bit with GPTQ with a group size 128
+    recipe = GPTQModifier(targets="Linear", scheme="W4A16", ignore=["lm_head", "re:.*layers.0.*"]) # DeepSeek-v2-lite
+
+    # recipe = GPTQModifier(targets="Linear", scheme="W8A16", ignore=["lm_head", "re:.*layers\.(2|3|4|5|6|7|8|9|10|11|12|13|14|15)\..*"])
+    # recipe = GPTQModifier(targets="Linear", scheme="W8A16", ignore=["lm_head", "re:.*mlp.gate$", "re:.*mlp.experts.*.*_proj$"])
+
+    # recipe = AWQModifier(ignore=["lm_head"], scheme="W4A16_ASYM", targets=["Linear"], duo_scaling="both")
+    # recipe = AutoRoundModifier(targets="Linear", scheme="W4A16", ignore=["lm_head"], iters=200)
+
+    apply_quantization(model, tokenizer, recipe, DATASET_ID, DATASET_SPLIT, NUM_CALIBRATION_SAMPLES, MAX_SEQUENCE_LENGTH)
+
+    # Save to disk compressed.
+    SAVE_DIR = args.model.rstrip("/").split("/")[-1] + "-" + recipe.scheme + "-" + "GPTQ"
+    print(SAVE_DIR)
+    model.save_pretrained(SAVE_DIR, save_compressed=True)
+    tokenizer.save_pretrained(SAVE_DIR)
 
     # Confirm generations of the quantized model look sane.
     print("\n\n")
@@ -93,9 +101,3 @@ if __name__ == '__main__':
     output = model.generate(**sample, max_new_tokens=100)
     print(tokenizer.decode(output[0]))
     print("==========================================\n\n")
-
-    # Save to disk compressed.
-    SAVE_DIR = args.model.rstrip("/").split("/")[-1] + "-W8A16-GPTQ"
-    print(SAVE_DIR)
-    model.save_pretrained(SAVE_DIR, save_compressed=True)
-    tokenizer.save_pretrained(SAVE_DIR)
