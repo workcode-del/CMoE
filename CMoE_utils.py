@@ -544,7 +544,9 @@ def reconstruct_moe(model, layer, inps, n_experts, n_activated, slice_expert_num
 
 
     ori_router_gate = layer.mlp.gate.weight
-    new_router = nn.Linear(model.config.hidden_size, new_expert_num, dtype=ori_router_gate.dtype, bias=False).to(device)
+    # new_router = nn.Linear(model.config.hidden_size, new_expert_num, dtype=ori_router_gate.dtype, bias=False).to(device)
+    new_router = layer.mlp.gate.__class__(model.config).to(device)
+    print(new_router)
     all_new_experts = nn.ModuleList()
 
     total_neurons_processed = 0
@@ -604,6 +606,9 @@ def reconstruct_moe(model, layer, inps, n_experts, n_activated, slice_expert_num
         new_router.weight.data[gate_start_idx: gate_start_idx + slice_expert_num, :] = expanded_gate
         gate_start_idx += slice_expert_num
 
+    if layer.mlp.shared_experts:
+        shared_expert = layer.mlp.shared_experts
+
     model.config.intermediate_size = all_new_experts[0].up_proj.weight.shape[0]
     model.config.num_experts = new_expert_num
     model.config.num_experts_per_tok = n_activated
@@ -614,6 +619,8 @@ def reconstruct_moe(model, layer, inps, n_experts, n_activated, slice_expert_num
     moe.top_k = n_activated
     moe.gate = new_router
     moe.experts = all_new_experts
+    if layer.mlp.shared_experts:
+        moe.shared_experts = layer.mlp.shared_experts
 
     return moe
 
@@ -621,12 +628,8 @@ def reconstruct_moe(model, layer, inps, n_experts, n_activated, slice_expert_num
 def construct_moe_from_existing(model, layer, layer_idx, inp, attention_mask, position_ids, position_embeddings, n_experts, n_activated, n_shared, args):
 
     device = next(layer.parameters()).device
-    
-    slice_expert_num = n_experts // len(layer.mlp.experts)
-    assert slice_expert_num * len(layer.mlp.experts) == n_experts, "n_experts must be multiple of existing expert num"
-    
-    # print(f"Converting existing {layer_idx} MoE layer with {len(layer.mlp.experts)} experts and {int(hasattr(layer.mlp, 'shared_expert'))} shared experts to {n_experts} experts")
-    
+    print(layer)
+
     # Forward attention
     inp = inp.to(device)
     if attention_mask is not None:
@@ -646,24 +649,23 @@ def construct_moe_from_existing(model, layer, layer_idx, inp, attention_mask, po
     residual = hidden_states
     hidden_states = layer.post_attention_layernorm(hidden_states)
     
-    # print(hidden_states.shape)
-    # print(layer.mlp.experts)
+    if hasattr(layer.mlp, 'gate') or hasattr(layer.mlp, 'experts'):
+        slice_expert_num = n_experts // len(layer.mlp.experts)
+        assert slice_expert_num * len(layer.mlp.experts) == n_experts, "n_experts must be multiple of existing expert num"
 
-    reconstruct_start_layer = args.reconstruct_start_layer
-    reconstruct_end_layer = args.reconstruct_end_layer
-    if layer_idx >= reconstruct_start_layer and layer_idx <= reconstruct_end_layer:
         moe = reconstruct_moe(model, layer, hidden_states, n_experts, n_activated, slice_expert_num, device, args)
-
-    if layer_idx >= reconstruct_start_layer and layer_idx <= reconstruct_end_layer:
         layer.mlp = moe
+    else:
+        slice_expert_num = 1
 
+    print(f"Quantize layer {layer_idx}")
     if True:
         from gptqutil import GPTQ, Quantizer, find_layers
 
         gptq = {}
         wbits = 4
         groupsize = 128
-        act_order = False
+        act_order = True
         static_groups = False
         sym = False
 
@@ -681,7 +683,7 @@ def construct_moe_from_existing(model, layer, layer_idx, inp, attention_mask, po
                 expert_id = int(match.group(1)) if match else 0
                 # print(name, expert_id)
                 if slice_expert_num == 1:
-                    gptq[name].quantizer.configure(wbits - 2, perchannel=True, sym=sym, mse=False)
+                    gptq[name].quantizer.configure(wbits, perchannel=True, sym=sym, mse=False)
                 elif slice_expert_num == 2:
                     if expert_id % 2 == 0:
                         gptq[name].quantizer.configure(wbits, perchannel=True, sym=sym, mse=False)
@@ -689,13 +691,13 @@ def construct_moe_from_existing(model, layer, layer_idx, inp, attention_mask, po
                         gptq[name].quantizer.configure(wbits, perchannel=True, sym=sym, mse=False)
                 elif slice_expert_num == 4:
                     if expert_id % 4 == 0:
-                        gptq[name].quantizer.configure(wbits, perchannel=True, sym=sym, mse=False)
+                        gptq[name].quantizer.configure(3, perchannel=True, sym=sym, mse=False)
                     elif expert_id % 4 == 1:
-                        gptq[name].quantizer.configure(wbits - 1, perchannel=True, sym=sym, mse=False)
+                        gptq[name].quantizer.configure(2, perchannel=True, sym=sym, mse=False)
                     elif expert_id % 4 == 2:
-                        gptq[name].quantizer.configure(wbits - 1, perchannel=True, sym=sym, mse=False)
+                        gptq[name].quantizer.configure(2, perchannel=True, sym=sym, mse=False)
                     elif expert_id % 4 == 3:
-                        gptq[name].quantizer.configure(wbits - 2, perchannel=True, sym=sym, mse=False)
+                        gptq[name].quantizer.configure(1, perchannel=True, sym=sym, mse=False)
             def add_batch(name):
                 def tmp(_, inp, out):
                     gptq[name].add_batch(inp[0].data, out.data)
@@ -710,19 +712,20 @@ def construct_moe_from_existing(model, layer, layer_idx, inp, attention_mask, po
                 position_ids=position_ids,
                 position_embeddings=position_embeddings)
 
-            moe(hidden_states)
+            layer.mlp(hidden_states)
 
             for handle in handles:
                 handle.remove()
             for name in qmodule.keys():
                 gptq[name].fasterquant(name=f"layer_idx.{layer_idx}."+name, groupsize=groupsize, actorder=act_order, static_groups=static_groups)
                 gptq[name].free()
-
-    if layer_idx >= reconstruct_start_layer and layer_idx <= reconstruct_end_layer:
-        moe_out, _ = moe(hidden_states)
-    else:
-        moe_out, _ = layer.mlp(hidden_states)
     
+    return_router_info = 'olmoe' in args.model.lower()
+    if return_router_info:
+        moe_out, _ = layer.mlp(hidden_states)
+    else:
+        moe_out = layer.mlp(hidden_states)
+
     moe_out = moe_out + residual
     # print("moe_out")
     return moe_out

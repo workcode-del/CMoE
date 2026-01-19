@@ -69,12 +69,15 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
   
     # MoE Carving
     carve_inp = copy.deepcopy(inp)
+    moe_model_flag = False
+    for layer in layers:
+        moe_model_flag = moe_model_flag or hasattr(layer.mlp, 'gate') or hasattr(layer.mlp, 'experts')
+    if moe_model_flag:
+        print("The model is already a MoE model. Proceeding to split experts. ")
+    else:
+        print("The model is a dense model. Proceeding to carve MoE layers. ")
+
     for layer_idx, layer in tqdm(enumerate(layers), desc = 'Carving MoE layers...'):
-        moe_model_flag = hasattr(layer.mlp, 'gate') or hasattr(layer.mlp, 'experts')
-        # if moe_model_flag:
-        #     print("The model is already a MoE model. Proceeding to split experts. ")
-        # else:
-        #     print("The model is a dense model. Proceeding to carve MoE layers. ")
         if moe_model_flag:
             moe_out = construct_moe_from_existing(model, layer, 
                 layer_idx,
