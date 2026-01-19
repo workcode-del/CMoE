@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 from typing import Optional, Tuple, List
+import re
 
 from CMoE_model import *
 
@@ -654,12 +655,6 @@ def construct_moe_from_existing(model, layer, layer_idx, inp, attention_mask, po
         moe = reconstruct_moe(model, layer, hidden_states, n_experts, n_activated, slice_expert_num, device, args)
 
     if layer_idx >= reconstruct_start_layer and layer_idx <= reconstruct_end_layer:
-        moe_out, _ = moe(hidden_states)
-    else:
-        moe_out, _ = layer.mlp(hidden_states)
-    
-    moe_out = moe_out + residual
-    if layer_idx >= reconstruct_start_layer and layer_idx <= reconstruct_end_layer:
         layer.mlp = moe
 
     if True:
@@ -671,36 +666,63 @@ def construct_moe_from_existing(model, layer, layer_idx, inp, attention_mask, po
         act_order = False
         static_groups = False
         sym = False
-        qmodule = find_layers(layer, filters=['q_proj', 'k_proj', 'v_proj', 'o_proj', 'kv_a_proj_with_mqa', 'kv_b_proj', 'up_proj', 'gate_proj', 'down_proj'])
 
-        print("Quant modules", qmodule.keys())
+        for ff in ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'kv_a_proj_with_mqa', 'kv_b_proj', 'up_proj', 'gate_proj', 'down_proj']:
+            print(ff)
+            qmodule = find_layers(layer, filters=[ff])
 
-        for name in qmodule.keys():
-            # print(name)
-            gptq[name] = GPTQ(qmodule[name])
-            gptq[name].quantizer = Quantizer()
-            gptq[name].quantizer.configure(wbits, perchannel=True, sym=sym, mse=False)
-        def add_batch(name):
-            def tmp(_, inp, out):
-                gptq[name].add_batch(inp[0].data, out.data)
-            return tmp
-        handles = []
-        for name in qmodule.keys():
-            handles.append(qmodule[name].register_forward_hook(add_batch(name)))
-        
-        layer.self_attn(
-            hidden_states=hidden_states_inorm, 
-            attention_mask=attention_mask, 
-            position_ids=position_ids,
-            position_embeddings=position_embeddings)
+            print("Quant modules", qmodule.keys())
+            if len(qmodule.keys()) == 0:
+                continue
+            for name in qmodule.keys():
+                gptq[name] = GPTQ(qmodule[name])
+                gptq[name].quantizer = Quantizer()
+                match = re.search(r'mlp\.experts\.(\d+)', name)
+                expert_id = int(match.group(1)) if match else 0
+                # print(name, expert_id)
+                if slice_expert_num == 1:
+                    gptq[name].quantizer.configure(wbits - 2, perchannel=True, sym=sym, mse=False)
+                elif slice_expert_num == 2:
+                    if expert_id % 2 == 0:
+                        gptq[name].quantizer.configure(wbits, perchannel=True, sym=sym, mse=False)
+                    elif expert_id % 2 == 1:
+                        gptq[name].quantizer.configure(wbits, perchannel=True, sym=sym, mse=False)
+                elif slice_expert_num == 4:
+                    if expert_id % 4 == 0:
+                        gptq[name].quantizer.configure(wbits, perchannel=True, sym=sym, mse=False)
+                    elif expert_id % 4 == 1:
+                        gptq[name].quantizer.configure(wbits - 1, perchannel=True, sym=sym, mse=False)
+                    elif expert_id % 4 == 2:
+                        gptq[name].quantizer.configure(wbits - 1, perchannel=True, sym=sym, mse=False)
+                    elif expert_id % 4 == 3:
+                        gptq[name].quantizer.configure(wbits - 2, perchannel=True, sym=sym, mse=False)
+            def add_batch(name):
+                def tmp(_, inp, out):
+                    gptq[name].add_batch(inp[0].data, out.data)
+                return tmp
+            handles = []
+            for name in qmodule.keys():
+                handles.append(qmodule[name].register_forward_hook(add_batch(name)))
+            
+            layer.self_attn(
+                hidden_states=hidden_states_inorm, 
+                attention_mask=attention_mask, 
+                position_ids=position_ids,
+                position_embeddings=position_embeddings)
 
-        moe(hidden_states)
+            moe(hidden_states)
 
-        for handle in handles:
-            handle.remove()
-        for name in qmodule.keys():
-            gptq[name].fasterquant(name=f"layer_idx.{layer_idx}."+name, groupsize=groupsize, actorder=act_order, static_groups=static_groups)
-            gptq[name].free()
+            for handle in handles:
+                handle.remove()
+            for name in qmodule.keys():
+                gptq[name].fasterquant(name=f"layer_idx.{layer_idx}."+name, groupsize=groupsize, actorder=act_order, static_groups=static_groups)
+                gptq[name].free()
 
+    if layer_idx >= reconstruct_start_layer and layer_idx <= reconstruct_end_layer:
+        moe_out, _ = moe(hidden_states)
+    else:
+        moe_out, _ = layer.mlp(hidden_states)
+    
+    moe_out = moe_out + residual
     # print("moe_out")
     return moe_out

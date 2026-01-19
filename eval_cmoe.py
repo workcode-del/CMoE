@@ -113,7 +113,12 @@ def get_olmoe(model_path):
 
     # model = OlmoeForCausalLM.from_pretrained(model, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, device_map = 'auto')
     print(model_path)
-    model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, device_map = 'auto')
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path, 
+        torch_dtype=torch.bfloat16, 
+        low_cpu_mem_usage=True, 
+        device_map = "auto"
+    )
 
     model.seqlen = 2048
     return model
