@@ -39,10 +39,10 @@ def cmoe_ppl_eval(model, testloader, eval_set, args):
     hook_handles = []
     # print(model, model.config)
     # print(hasattr(model.config, 'num_experts'))
-    if hasattr(model.config, 'num_experts'): ## OLmoe
-        for i in range(model.config.num_experts):
-            hooks.append(model.model.layers[0].mlp.experts[i].up_proj)
-            hooks.append(model.model.layers[0].mlp.experts[i].gate_proj)
+    # if hasattr(model.config, 'num_experts'): ## OLmoe
+    #     for i in range(model.config.num_experts):
+    #         hooks.append(model.model.layers[0].mlp.experts[i].up_proj)
+    #         hooks.append(model.model.layers[0].mlp.experts[i].gate_proj)
     # if hasattr(model.config, 'n_routed_experts'): ## Deepseek-v3 / Moonlight
     #     for i in range(model.config.n_routed_experts):
     #         # for j 
@@ -128,23 +128,6 @@ def get_deepseek_v2_lite(model_path):
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
 
-    device_map = "auto"
-    # {
-    #     "model.embed_tokens": "cpu",
-    #     **{f"model.layers.{k}": 0 for k in range(0, 20)   },
-    #     **{f"model.layers.{k}": "cpu" for k in range(20, 28)   },
-    #     "model.norm": "cpu",
-    #     "lm_head": "cpu",
-    # }
-
-    # {
-    #     "model.embed_tokens": "cpu",
-    #     **{f"model.layers.{k}": "cpu" for k in range(0, layer_num - layer_per_gpu*2)                       },
-    #     **{f"model.layers.{k}": 0 for k in range(layer_num - layer_per_gpu*2, layer_num - layer_per_gpu)   },
-    #     **{f"model.layers.{k}": 1 for k in range(layer_num - layer_per_gpu, layer_num)                     },
-    #     "model.norm": "cuda:1",
-    #     "lm_head": 1,
-    # }
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
