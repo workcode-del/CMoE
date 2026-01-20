@@ -668,7 +668,7 @@ def construct_moe_from_existing(model, layer, layer_idx, inp, attention_mask, po
         slice_expert_num = 1
 
     # print(layer)
-    quant_layer = False
+    quant_layer = True
     quant_attn = True
 
     if quant_layer:

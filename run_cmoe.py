@@ -114,7 +114,7 @@ if __name__ == '__main__':
     # print(f"Original model ppl on {args.dataset}: {ori_ppl}")
 
     carved_model, tick_1, tick_2, pre_ppl, ppl = cmoe_sequential(model, tokenizer, dataloader, args)
-    save_carved_model = True
+    save_carved_model = False
     if save_carved_model:
         carved_save_dir = "model/carved_olmoe_cmoe_e" + str(args.nexperts) + "_a" + str(args.nactivated)
         print(carved_model)
