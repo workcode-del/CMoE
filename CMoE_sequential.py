@@ -73,9 +73,25 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
     for layer in layers:
         moe_model_flag = moe_model_flag or hasattr(layer.mlp, 'gate') or hasattr(layer.mlp, 'experts')
     if moe_model_flag:
+        if hasattr(model.config, 'num_experts'):         ## olmoe，
+            slice_expert_num = args.nexperts // model.config.num_experts
+            assert slice_expert_num * model.config.num_experts == args.nexperts, "n_experts must be multiple of existing expert num"
+            model.config.num_experts = args.nexperts
+        elif hasattr(model.config, 'n_routed_experts'):  ## DeepSeek-V1-MoE-16B
+            slice_expert_num = args.nexperts // model.config.n_routed_experts
+            assert slice_expert_num * model.config.n_routed_experts == args.nexperts, "n_experts must be multiple of existing expert num"
+            model.config.n_routed_experts = args.nexperts
+
+        model.config.num_experts_per_tok = args.nactivated
+        if hasattr(model.config, 'moe_intermediate_size'): ## DeepSeek-V1-MoE-16B
+            model.config.moe_intermediate_size = model.config.moe_intermediate_size // slice_expert_num
+        elif hasattr(model.config, 'intermediate_size'): ## olmoe，
+            model.config.intermediate_size = model.config.intermediate_size // slice_expert_num
         print("The model is already a MoE model. Proceeding to split experts. ")
+        print(f"Slice expert by : {slice_expert_num} to {args.nexperts}, with {args.nactivated} activated experts.")
     else:
         print("The model is a dense model. Proceeding to carve MoE layers. ")
+        slice_expert_num = 1
 
     for layer_idx, layer in tqdm(enumerate(layers), desc = 'Carving MoE layers...'):
         if moe_model_flag:
@@ -87,6 +103,7 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
                 position_embeddings,
                 n_experts = args.nexperts,
                 n_activated = args.nactivated,
+                slice_expert_num = slice_expert_num,
                 n_shared = args.nshared,
                 args = args
             )

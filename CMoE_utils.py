@@ -10,6 +10,7 @@ import numpy as np
 from tqdm import tqdm
 from typing import Optional, Tuple, List
 import re
+import time
 
 from CMoE_model import *
 
@@ -119,7 +120,7 @@ def analyze_neuron_activations(scores: torch.Tensor, save_path: Optional[str] = 
         plt.savefig(save_path)
         plt.close()
     
-    return activation_counts, activation_rates, activation_markers
+    return activation_rates
     # return activation_counts, activation_values, activation_markers
 
 def analyze_expert_profile(layer, hidden_states, topk, save_path: Optional[str] = None):
@@ -378,7 +379,6 @@ def construct_moe(model, layer, layer_idx, inp, attention_mask, position_ids, po
 
 def construct_experts_by_rates(
     activation_rates,
-    activation_markers,
     num_experts,
     num_shared_experts):
 
@@ -387,7 +387,7 @@ def construct_experts_by_rates(
 
     expert_groups = []
     rates = activation_rates.float()
-    markers = activation_markers.float()
+    # markers = activation_markers.float()
 
     expert_groups.append([])
     _, top_indices = torch.topk(rates, hidden_size)
@@ -437,12 +437,11 @@ def reconstruct_moe_harddrop(model, layer, hidden_states, n_experts, n_activated
         
         # print(f"Expert {expert_idx} scores shape: {expert_scores.shape}")
         # Calculate activation markers and rates for this expert's neurons
-        counts, rates, markers = analyze_neuron_activations(expert_scores, sparsity=sparsity)
+        rates = analyze_neuron_activations(expert_scores, sparsity=sparsity)
         # counts, rates, markers = analyze_neuron_activations(expert_scores, save_path=f'./plot/scores_analysis_{layer.self_attn.layer_idx}_{expert_idx}.png', sparsity=sparsity)
 
         expert_groups, representative_indices = construct_experts_by_rates(
             rates,
-            markers,
             num_experts = slice_expert_num,
             num_shared_experts = 0,
         )
@@ -542,13 +541,14 @@ def reconstruct_moe(model, layer, inps, n_experts, n_activated, slice_expert_num
     new_expert_num = ori_expert_num * slice_expert_num 
     scaling_factor = slice_expert_num
 
-    model.config.intermediate_size = model.config.intermediate_size * slice_expert_num
-    model.config.num_experts = new_expert_num
-    model.config.num_experts_per_tok = n_activated
+    # print(ori_expert_num, new_expert_num, scaling_factor)
+    # print(model.config)
 
     ori_router_gate = layer.mlp.gate.weight
-    # new_router = nn.Linear(model.config.hidden_size, new_expert_num, dtype=ori_router_gate.dtype, bias=False).to(device)
-    new_router = layer.mlp.gate.__class__(model.config).to(device).to(layer.mlp.gate.weight.dtype)
+    if type(layer.mlp.gate) == nn.Linear:
+        new_router = nn.Linear(model.config.hidden_size, new_expert_num, dtype=ori_router_gate.dtype, bias=False).to(device)
+    else:
+        new_router = layer.mlp.gate.__class__(model.config).to(device).to(layer.mlp.gate.weight.dtype)
     # print(new_router)
     all_new_experts = nn.ModuleList()
 
@@ -560,21 +560,20 @@ def reconstruct_moe(model, layer, inps, n_experts, n_activated, slice_expert_num
         ori_up_proj_weights = expert.up_proj.weight
         ori_down_proj_weights = expert.down_proj.weight
 
+        tick0 = time.time()   
         # print(f"\nProcessing original expert {expert_idx} / {ori_expert_num}")
         h = expert.act_fn(F.linear(F.normalize(inps, p=2, dim=-1), F.normalize(ori_gate_proj_weights, p=2, dim=1)))
         h = h * F.linear(F.normalize(inps, p=2, dim=-1), F.normalize(ori_up_proj_weights, p=2, dim=1))
         expert_scores = h.to('cpu')
-        
-        analyze_sparsity = 0.1
-        counts, rates, markers = analyze_neuron_activations(expert_scores, sparsity=analyze_sparsity)
 
+        analyze_sparsity = 0.1
+        rates = analyze_neuron_activations(expert_scores, sparsity=analyze_sparsity)
         expert_groups, representative_indices = construct_experts_by_rates(
             rates,
-            markers,
             num_experts = slice_expert_num,
             num_shared_experts = 0,
         )
-
+        
         lowrank_sparsity = 0
         expert_groups = expert_groups[1:]
         # Create new experts for this original expert
@@ -583,51 +582,39 @@ def reconstruct_moe(model, layer, inps, n_experts, n_activated, slice_expert_num
             expert_mlp = expert.__class__(model.config).to(device)
             
             with torch.no_grad():
-                gate_proj_weights = []
-                up_proj_weights = []
-                down_proj_weights = []
-
-                for global_idx in group_indices:
-                    gate_proj_weights.append(ori_gate_proj_weights[global_idx, :])
-                    up_proj_weights.append(ori_up_proj_weights[global_idx, :])
-                    down_proj_weights.append(ori_down_proj_weights[:, global_idx] * scaling_factor)
-
-                # gate_proj_weights_t = torch.stack(gate_proj_weights).T
-                # expert_mlp.gate_proj.weight.data = lowrank_compress_svd(gate_proj_weights_t, lowrank_sparsity).T
-                # up_proj_weights_t = torch.stack(up_proj_weights).T
-                # expert_mlp.up_proj.weight.data = lowrank_compress_svd(up_proj_weights_t, lowrank_sparsity).T
-                # down_proj_weights = torch.stack(down_proj_weights, dim=1)
-                # expert_mlp.down_proj.weight.data = lowrank_compress_svd(down_proj_weights, lowrank_sparsity)
-
-                expert_mlp.gate_proj.weight.data = torch.stack(gate_proj_weights)
-                expert_mlp.up_proj.weight.data = torch.stack(up_proj_weights)
-                expert_mlp.down_proj.weight.data = torch.stack(down_proj_weights, dim=1)
-
+                group_indices_tensor = torch.tensor(group_indices, dtype=torch.long, device=ori_gate_proj_weights.device)
+                
+                expert_mlp.gate_proj.weight.data = ori_gate_proj_weights[group_indices_tensor, :]
+                expert_mlp.up_proj.weight.data = ori_up_proj_weights[group_indices_tensor, :]
+                expert_mlp.down_proj.weight.data = ori_down_proj_weights[:, group_indices_tensor] * scaling_factor
+                
             all_new_experts.append(expert_mlp)
             new_expert_intermediate_size = expert_mlp.up_proj.weight.shape[0]
             total_neurons_processed += new_expert_intermediate_size
-
             # print(expert_idx, ii, new_expert_intermediate_size, expert_mlp.gate_proj.weight.shape, expert_mlp.up_proj.weight.shape, expert_mlp.down_proj.weight.shape)
+        
         expanded_gate = ori_router_gate.data[expert_idx, :].unsqueeze(0).repeat(slice_expert_num, 1).to(device)
 
+        # print(f"gate_start_idx, slice_expert_num, expanded_gate.shape: {expert_idx, gate_start_idx, slice_expert_num, expanded_gate.shape}")
         new_router.weight.data[gate_start_idx: gate_start_idx + slice_expert_num, :] = expanded_gate
         gate_start_idx += slice_expert_num
 
-    if layer.mlp.shared_experts:
-        shared_expert = layer.mlp.shared_experts
+        tick1 = time.time()
+        # print(f"Expert {expert_idx} re-sort time cost: {tick1 - tick0}")
 
     moe = layer.mlp.__class__(model.config).to(device)
     moe.num_experts = len(all_new_experts)
     moe.top_k = n_activated
     moe.gate = new_router
     moe.experts = all_new_experts
-    if layer.mlp.shared_experts:
+    if hasattr(layer.mlp, 'shared_experts'):
         moe.shared_experts = layer.mlp.shared_experts
 
     return moe
 
 @torch.no_grad()
-def construct_moe_from_existing(model, layer, layer_idx, inp, attention_mask, position_ids, position_embeddings, n_experts, n_activated, n_shared, args):
+def construct_moe_from_existing(model, layer, layer_idx, inp, attention_mask, position_ids, position_embeddings, 
+                                n_experts, n_activated, slice_expert_num, n_shared, args):
 
     device = next(layer.parameters()).device
     # print(layer, device)
@@ -657,15 +644,9 @@ def construct_moe_from_existing(model, layer, layer_idx, inp, attention_mask, po
     residual = hidden_states
     hidden_states = layer.post_attention_layernorm(hidden_states)
     
-    if hasattr(layer.mlp, 'gate') or hasattr(layer.mlp, 'experts'):
-        slice_expert_num = n_experts // len(layer.mlp.experts)
-        assert slice_expert_num * len(layer.mlp.experts) == n_experts, "n_experts must be multiple of existing expert num"
-        
+    if hasattr(layer.mlp, 'gate') or hasattr(layer.mlp, 'experts'):        
         moe = reconstruct_moe(model, layer, hidden_states, n_experts, n_activated, slice_expert_num, device, args)
-        layer.mlp = moe
-        
-    else:
-        slice_expert_num = 1
+        layer.mlp = moe        
 
     # print(layer)
     quant_layer = True
@@ -681,66 +662,79 @@ def construct_moe_from_existing(model, layer, layer_idx, inp, attention_mask, po
         act_order = True
         static_groups = False
         sym = False
-        filters = ['up_proj', 'gate_proj', 'down_proj']
+        ffn_filters = ['up_proj', 'gate_proj', 'down_proj']
+        attn_filters = ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'kv_a_proj_with_mqa', 'kv_b_proj']
         if quant_attn:
-            filters.extend(['q_proj', 'k_proj', 'v_proj', 'o_proj', 'kv_a_proj_with_mqa', 'kv_b_proj'])
+            filters = attn_filters + ffn_filters
+        else:
+            filters = ffn_filters
 
         for ff in filters:
-            qmodule = find_layers(layer, filters=[ff])
+            qmodule_all = find_layers(layer, filters=[ff])
+            qbatch = 32
+            for qmi in range(0, len(qmodule_all.keys()), qbatch):
+                qmodule = {k: qmodule_all[k] for k in list(qmodule_all.keys())[qmi: qmi + qbatch]}
+                print("Quant modules", ff, qmodule.keys())
+                if len(qmodule.keys()) == 0:
+                    continue
+                for name in qmodule.keys():
+                    gptq[name] = GPTQ(qmodule[name])
+                    gptq[name].quantizer = Quantizer()
 
-            print("Quant modules", ff, qmodule.keys())
-            if len(qmodule.keys()) == 0:
-                continue
-            for name in qmodule.keys():
-                gptq[name] = GPTQ(qmodule[name])
-                gptq[name].quantizer = Quantizer()
-                match = re.search(r'mlp\.experts\.(\d+)', name)
-                expert_id = int(match.group(1)) if match else 0  ## shared expert id is 0
-                # print(name, expert_id)
-                if slice_expert_num == 1:
-                    gptq[name].quantizer.configure(4, perchannel=True, sym=sym, mse=False)
-                elif slice_expert_num == 2:
-                    if expert_id % 2 == 0:
-                        gptq[name].quantizer.configure(4, perchannel=True, sym=sym, mse=False)
-                    elif expert_id % 2 == 1:
-                        gptq[name].quantizer.configure(3, perchannel=True, sym=sym, mse=False)
-                elif slice_expert_num == 4:
-                    if expert_id % 4 == 0:
-                        gptq[name].quantizer.configure(3, perchannel=True, sym=sym, mse=False)
-                    elif expert_id % 4 == 1:
-                        gptq[name].quantizer.configure(2, perchannel=True, sym=sym, mse=False)
-                    elif expert_id % 4 == 2:
-                        gptq[name].quantizer.configure(2, perchannel=True, sym=sym, mse=False)
-                    elif expert_id % 4 == 3:
-                        gptq[name].quantizer.configure(1, perchannel=True, sym=sym, mse=False)
-            def add_batch(name):
-                def tmp(_, inp, out):
-                    gptq[name].add_batch(inp[0].data, out.data)
-                return tmp
-            handles = []
-            for name in qmodule.keys():
-                handles.append(qmodule[name].register_forward_hook(add_batch(name)))
-            
-            try:
-                layer.self_attn(
-                    hidden_states=hidden_states_inorm, 
-                    attention_mask=attention_mask, 
-                    position_ids=position_ids,
-                    position_embeddings=position_embeddings)[0]
-            except:
-                layer.self_attn(
-                    hidden_states=hidden_states, 
-                    attention_mask=attention_mask, 
-                    position_ids=position_ids)[0]
-            
-            layer.mlp(hidden_states)
+                    if name.split('.')[-1] in attn_filters:
+                        gptq[name].quantizer.configure(8, perchannel=True, sym=sym, mse=False)
+                    else:
+                        match = re.search(r'mlp\.experts\.(\d+)', name)
+                        expert_id = int(match.group(1)) if match else -1  ## shared expert id is -1
+                        if expert_id == -1:
+                            gptq[name].quantizer.configure(4, perchannel=True, sym=sym, mse=False)
+                        else:
+                            if slice_expert_num == 1:
+                                gptq[name].quantizer.configure(4, perchannel=True, sym=sym, mse=False)
+                            elif slice_expert_num == 2:
+                                if expert_id % 2 == 0:
+                                    gptq[name].quantizer.configure(4, perchannel=True, sym=sym, mse=False)
+                                elif expert_id % 2 == 1:
+                                    gptq[name].quantizer.configure(3, perchannel=True, sym=sym, mse=False)
+                            elif slice_expert_num == 4:
+                                if expert_id % 4 == 0:
+                                    gptq[name].quantizer.configure(3, perchannel=True, sym=sym, mse=False)
+                                elif expert_id % 4 == 1:
+                                    gptq[name].quantizer.configure(2, perchannel=True, sym=sym, mse=False)
+                                elif expert_id % 4 == 2:
+                                    gptq[name].quantizer.configure(2, perchannel=True, sym=sym, mse=False)
+                                elif expert_id % 4 == 3:
+                                    gptq[name].quantizer.configure(1, perchannel=True, sym=sym, mse=False)
+                def add_batch(name):
+                    def tmp(_, inp, out):
+                        gptq[name].add_batch(inp[0].data, out.data)
+                    return tmp
+                handles = []
+                for name in qmodule.keys():
+                    handles.append(qmodule[name].register_forward_hook(add_batch(name)))
+                
+                try:
+                    layer.self_attn(
+                        hidden_states=hidden_states_inorm, 
+                        attention_mask=attention_mask, 
+                        position_ids=position_ids,
+                        position_embeddings=position_embeddings)[0]
+                except:
+                    layer.self_attn(
+                        hidden_states=hidden_states, 
+                        attention_mask=attention_mask, 
+                        position_ids=position_ids)[0]
+                
+                layer.mlp(hidden_states)
 
-            for handle in handles:
-                handle.remove()
-            for name in qmodule.keys():
-                gptq[name].fasterquant(name=f"layer_idx.{layer_idx}."+name, groupsize=groupsize, actorder=act_order, static_groups=static_groups)
-                gptq[name].free()
-    
+                for handle in handles:
+                    handle.remove()
+                for name in qmodule.keys():
+                    gptq[name].fasterquant(name=f"layer_idx.{layer_idx}."+name, groupsize=groupsize, actorder=act_order, static_groups=static_groups)
+                    gptq[name].free()
+            
+            del qmodule_all
+        
     return_router_info = 'olmoe' in args.model.lower()
     if return_router_info:
         moe_out, _ = layer.mlp(hidden_states)
