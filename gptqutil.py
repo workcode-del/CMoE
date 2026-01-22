@@ -280,12 +280,14 @@ class GPTQ:
             
     def free(self):
         if DEBUG:
-            self.inp1 = None
-            self.out1 = None
-        self.H = None
-        self.Losses = None
-        self.Trace = None
-        torch.cuda.empty_cache()
+            del self.inp1
+            del self.out1
+        if hasattr(self, 'H') and self.H is not None:
+            del self.H
+        if hasattr(self, 'Losses') and self.Losses is not None:
+            del self.Losses
+        if hasattr(self, 'Trace') and self.Trace is not None:
+            del self.Trace
 
 # Find all layers of a certain type in a given module.
 def find_layers(module: nn.Module, filters: list[str]=[], layers=[nn.Linear], name=''):

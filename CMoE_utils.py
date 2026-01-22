@@ -11,6 +11,7 @@ from tqdm import tqdm
 from typing import Optional, Tuple, List
 import re
 import time
+import gc
 
 from CMoE_model import *
 from gptqutil import GPTQ, Quantizer, find_layers
@@ -614,6 +615,115 @@ def reconstruct_moe(model, layer, layer_idx, inps, n_experts, n_activated, slice
 
     return moe
 
+def quant_layer_mix_precision(layer, layer_idx, quant_attn, slice_expert_num, 
+                attn_hidden_states, ffn_hidden_states, attention_mask, position_ids, position_embeddings, 
+                args):
+    print(f"Quantize layer {layer_idx}")
+    nsample = attn_hidden_states.shape[0]
+    assert attn_hidden_states.shape[0] == ffn_hidden_states.shape[0], f"attn_hidden_states.shape: {attn_hidden_states.shape}, ffn_hidden_states.shape: {ffn_hidden_states.shape}"
+
+    gptq = {}
+    wbits = 4
+    groupsize = 128
+    act_order = True
+    static_groups = False
+    sym = False
+    ffn_filters = ['up_proj', 'gate_proj', 'down_proj']
+    attn_filters = ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'kv_a_proj_with_mqa', 'kv_b_proj']
+    if quant_attn:
+        filters = attn_filters + ffn_filters
+    else:
+        filters = ffn_filters
+
+    for ff in filters:
+        qmodule_all = find_layers(layer, filters=[ff])
+        qbatch = 64
+
+        for qmi in range(0, len(qmodule_all.keys()), qbatch):
+            tick0 = time.time()   
+
+            qmodule = {k: qmodule_all[k] for k in list(qmodule_all.keys())[qmi: qmi + qbatch]}
+            # print("Quant modules", ff, qmodule.keys())
+            # print("Quant modules", ff, qmi)
+            if len(qmodule.keys()) == 0:
+                continue
+            for name in qmodule.keys():
+                split_name = name.split('.')[-1]
+                gptq[name] = GPTQ(qmodule[name])
+                gptq[name].quantizer = Quantizer()
+
+                if split_name in attn_filters:
+                    bit = [8]
+                    gptq[name].quantizer.configure(bit[0], perchannel=True, sym=sym, mse=False)
+                else:
+                    match = re.search(r'mlp\.experts\.(\d+)', name)
+                    expert_id = int(match.group(1)) if match else -1  ## shared expert id is -1
+                    if expert_id == -1:
+                        bit = [4]
+                        gptq[name].quantizer.configure(bit[0], perchannel=True, sym=sym, mse=False)
+                    else:
+                        if slice_expert_num == 1:
+                            bit = [2]
+                            gptq[name].quantizer.configure(bit[0], perchannel=True, sym=sym, mse=False)
+                        elif slice_expert_num == 2:
+                            bit = [2, 2]
+                            if expert_id % 2 == 0:
+                                gptq[name].quantizer.configure(bit[0], perchannel=True, sym=sym, mse=False)
+                            elif expert_id % 2 == 1:
+                                gptq[name].quantizer.configure(bit[1], perchannel=True, sym=sym, mse=False)
+                        elif slice_expert_num == 4:
+                            bit = [3, 2, 2, 1]
+                            if expert_id % 4 == 0:
+                                gptq[name].quantizer.configure(bit[0], perchannel=True, sym=sym, mse=False)
+                            elif expert_id % 4 == 1:
+                                gptq[name].quantizer.configure(bit[1], perchannel=True, sym=sym, mse=False)
+                            elif expert_id % 4 == 2:
+                                gptq[name].quantizer.configure(bit[2], perchannel=True, sym=sym, mse=False)
+                            elif expert_id % 4 == 3:
+                                gptq[name].quantizer.configure(bit[3], perchannel=True, sym=sym, mse=False)
+            def add_batch(name):
+                def tmp(_, inp, out):
+                    gptq[name].add_batch(inp[0].data, out.data)
+                return tmp
+            handles = []
+            for name in qmodule.keys():
+                handles.append(qmodule[name].register_forward_hook(add_batch(name)))
+            
+            for isample in range(nsample):
+                if split_name in attn_filters:
+                    attn_sample = attn_hidden_states[isample].unsqueeze(0)
+                    try:
+                        layer.self_attn(
+                            hidden_states=attn_sample, 
+                            attention_mask=attention_mask, 
+                            position_ids=position_ids,
+                            position_embeddings=position_embeddings)
+                    except:
+                        layer.self_attn(
+                            hidden_states=attn_sample, 
+                            attention_mask=attention_mask, 
+                            position_ids=position_ids)
+                elif split_name in ffn_filters:
+                    ffn_sample = ffn_hidden_states[isample].unsqueeze(0)
+                    layer.mlp(ffn_sample)
+                else:
+                    assert False, f"Not quantize {name}"
+
+            for handle in handles:
+                handle.remove()
+            for name in qmodule.keys():
+                gptq[name].fasterquant(name=f"layer_idx.{layer_idx}."+name, groupsize=groupsize, actorder=act_order, static_groups=static_groups)
+                gptq[name].free()
+                del gptq[name]
+            
+            tick1 = time.time()
+            print(f"Quantize layer {layer_idx} {ff} {qmi}:{qmi + min(qbatch, len(qmodule.keys()))} bits: {bit} time: {tick1 - tick0}")
+
+        del qmodule_all
+        
+        gc.collect()
+        torch.cuda.empty_cache()
+
 @torch.no_grad()
 def construct_moe_from_existing(model, layer, layer_idx, inp, attention_mask, position_ids, position_embeddings, 
                                 n_experts, n_activated, slice_expert_num, n_shared, args):
@@ -640,7 +750,7 @@ def construct_moe_from_existing(model, layer, layer_idx, inp, attention_mask, po
             position_embeddings=position_embeddings)[0]
     except:
         hidden_states = layer.self_attn(
-            hidden_states=hidden_states_inorm, 
+            hidden_states=hidden_states_inorm,
             attention_mask=attention_mask, 
             position_ids=position_ids)[0]
     hidden_states = residual + hidden_states
@@ -654,103 +764,14 @@ def construct_moe_from_existing(model, layer, layer_idx, inp, attention_mask, po
         layer.mlp = moe        
 
     # print(layer)
-    quant_layer = True
-    quant_attn = True
+    if_quant_layer = True
+    if_quant_attn = True
 
-    if quant_layer:
-        print(f"Quantize layer {layer_idx}")
-
-        gptq = {}
-        wbits = 4
-        groupsize = 128
-        act_order = True
-        static_groups = False
-        sym = False
-        ffn_filters = ['up_proj', 'gate_proj', 'down_proj']
-        attn_filters = ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'kv_a_proj_with_mqa', 'kv_b_proj']
-        if quant_attn:
-            filters = attn_filters + ffn_filters
-        else:
-            filters = ffn_filters
-
-        for ff in filters:
-            qmodule_all = find_layers(layer, filters=[ff])
-            qbatch = 32
-
-            for qmi in range(0, len(qmodule_all.keys()), qbatch):
-                tick0 = time.time()   
-
-                qmodule = {k: qmodule_all[k] for k in list(qmodule_all.keys())[qmi: qmi + qbatch]}
-                # print("Quant modules", ff, qmodule.keys())
-                # print("Quant modules", ff, qmi)
-                if len(qmodule.keys()) == 0:
-                    continue
-                for name in qmodule.keys():
-                    gptq[name] = GPTQ(qmodule[name])
-                    gptq[name].quantizer = Quantizer()
-
-                    if name.split('.')[-1] in attn_filters:
-                        bit = [8]
-                        gptq[name].quantizer.configure(bit[0], perchannel=True, sym=sym, mse=False)
-                    else:
-                        match = re.search(r'mlp\.experts\.(\d+)', name)
-                        expert_id = int(match.group(1)) if match else -1  ## shared expert id is -1
-                        if expert_id == -1:
-                            bit = [4]
-                            gptq[name].quantizer.configure(bit[0], perchannel=True, sym=sym, mse=False)
-                        else:
-                            if slice_expert_num == 1:
-                                bit = [2]
-                                gptq[name].quantizer.configure(bit[0], perchannel=True, sym=sym, mse=False)
-                            elif slice_expert_num == 2:
-                                bit = [2, 2]
-                                if expert_id % 2 == 0:
-                                    gptq[name].quantizer.configure(bit[0], perchannel=True, sym=sym, mse=False)
-                                elif expert_id % 2 == 1:
-                                    gptq[name].quantizer.configure(bit[1], perchannel=True, sym=sym, mse=False)
-                            elif slice_expert_num == 4:
-                                bit = [3, 2, 2, 1]
-                                if expert_id % 4 == 0:
-                                    gptq[name].quantizer.configure(bit[0], perchannel=True, sym=sym, mse=False)
-                                elif expert_id % 4 == 1:
-                                    gptq[name].quantizer.configure(bit[1], perchannel=True, sym=sym, mse=False)
-                                elif expert_id % 4 == 2:
-                                    gptq[name].quantizer.configure(bit[2], perchannel=True, sym=sym, mse=False)
-                                elif expert_id % 4 == 3:
-                                    gptq[name].quantizer.configure(bit[3], perchannel=True, sym=sym, mse=False)
-                def add_batch(name):
-                    def tmp(_, inp, out):
-                        gptq[name].add_batch(inp[0].data, out.data)
-                    return tmp
-                handles = []
-                for name in qmodule.keys():
-                    handles.append(qmodule[name].register_forward_hook(add_batch(name)))
-                
-                try:
-                    layer.self_attn(
-                        hidden_states=hidden_states_inorm, 
-                        attention_mask=attention_mask, 
-                        position_ids=position_ids,
-                        position_embeddings=position_embeddings)[0]
-                except:
-                    layer.self_attn(
-                        hidden_states=hidden_states, 
-                        attention_mask=attention_mask, 
-                        position_ids=position_ids)[0]
-                
-                layer.mlp(hidden_states)
-
-                for handle in handles:
-                    handle.remove()
-                for name in qmodule.keys():
-                    gptq[name].fasterquant(name=f"layer_idx.{layer_idx}."+name, groupsize=groupsize, actorder=act_order, static_groups=static_groups)
-                    gptq[name].free()
-                
-                tick1 = time.time()
-                print(f"Quantize layer {layer_idx} {ff} {qmi}:{qmi + min(qbatch, len(qmodule.keys()))} bits: {bit} time: {tick1 - tick0}")
-
-            del qmodule_all
-        
+    if if_quant_layer:
+        quant_layer_mix_precision(layer, layer_idx, if_quant_attn, slice_expert_num, 
+                    hidden_states_inorm, hidden_states, attention_mask, position_ids, position_embeddings, 
+                    args)
+    
     return_router_info = 'olmoe' in args.model.lower()
     if return_router_info:
         moe_out, _ = layer.mlp(hidden_states)
