@@ -172,6 +172,7 @@ class GPTQ:
         inp = math.sqrt(2 / self.nsamples) * inp.float()
         # self.H += 2 / self.nsamples * inp.matmul(inp.t())
         self.H += inp.matmul(inp.t()) # [K, K]
+        # print(self.layer, inp.shape, self.nsamples, self.H)
 
     def fasterquant(
         self, name: str, blocksize=128, percdamp=.01, groupsize=-1, actorder=False, static_groups=False

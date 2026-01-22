@@ -114,7 +114,9 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
                 n_shared = args.nshared,
                 args = args
             )
-        carve_inp = moe_out
+        inps = moe_out
+        gc.collect()
+        torch.cuda.empty_cache()
     
     tick_1 = time.time()
 

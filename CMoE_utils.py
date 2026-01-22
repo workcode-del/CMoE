@@ -558,12 +558,12 @@ def reconstruct_moe(model, layer, layer_idx, inps, n_experts, n_activated, slice
     total_neurons_processed = 0
     gate_start_idx = 0
 
+    tick0 = time.time()
     for expert_idx, expert in enumerate(layer.mlp.experts):
         ori_gate_proj_weights = expert.gate_proj.weight
         ori_up_proj_weights = expert.up_proj.weight
         ori_down_proj_weights = expert.down_proj.weight
 
-        tick0 = time.time()   
         # print(f"\nProcessing original expert {expert_idx} / {ori_expert_num}")
         h = expert.act_fn(F.linear(F.normalize(inps, p=2, dim=-1), F.normalize(ori_gate_proj_weights, p=2, dim=1)))
         h = h * F.linear(F.normalize(inps, p=2, dim=-1), F.normalize(ori_up_proj_weights, p=2, dim=1))
@@ -602,8 +602,8 @@ def reconstruct_moe(model, layer, layer_idx, inps, n_experts, n_activated, slice
         new_router.weight.data[gate_start_idx: gate_start_idx + slice_expert_num, :] = expanded_gate
         gate_start_idx += slice_expert_num
 
-        tick1 = time.time()
-        print(f"Layer {layer_idx}, Expert {expert_idx} re-sort time cost: {tick1 - tick0}")
+    tick1 = time.time()
+    print(f"Layer {layer_idx}, Expert re- sort time: {tick1 - tick0}")
 
     moe = layer.mlp.__class__(model.config).to(device)
     moe.num_experts = len(all_new_experts)
@@ -720,9 +720,6 @@ def quant_layer_mix_precision(layer, layer_idx, quant_attn, slice_expert_num,
             print(f"Quantize layer {layer_idx} {ff} {qmi}:{qmi + min(qbatch, len(qmodule.keys()))} bits: {bit} time: {tick1 - tick0}")
 
         del qmodule_all
-        
-        gc.collect()
-        torch.cuda.empty_cache()
 
 @torch.no_grad()
 def construct_moe_from_existing(model, layer, layer_idx, inp, attention_mask, position_ids, position_embeddings, 
@@ -761,7 +758,9 @@ def construct_moe_from_existing(model, layer, layer_idx, inp, attention_mask, po
     
     if hasattr(layer.mlp, 'gate') or hasattr(layer.mlp, 'experts'):        
         moe = reconstruct_moe(model, layer, layer_idx, hidden_states, n_experts, n_activated, slice_expert_num, device, args)
-        layer.mlp = moe        
+        layer.mlp = moe
+        gc.collect()
+        torch.cuda.empty_cache()
 
     # print(layer)
     if_quant_layer = True
@@ -771,7 +770,10 @@ def construct_moe_from_existing(model, layer, layer_idx, inp, attention_mask, po
         quant_layer_mix_precision(layer, layer_idx, if_quant_attn, slice_expert_num, 
                     hidden_states_inorm, hidden_states, attention_mask, position_ids, position_embeddings, 
                     args)
+        gc.collect()
+        torch.cuda.empty_cache()
     
+    print(hidden_states.shape)
     return_router_info = 'olmoe' in args.model.lower()
     if return_router_info:
         moe_out, _ = layer.mlp(hidden_states)
