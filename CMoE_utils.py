@@ -594,6 +594,23 @@ def quant_layer_mix_precision(layer, layer_idx, quant_attn, slice_expert_num,
     else:
         filters = ffn_filters
 
+    qscheme_str = args.quant_scheme
+    qscheme_attn = [8]
+    qscheme_share = [4]
+    qscheme_expert = [2, 2, 2, 2, 2, 2, 2, 2]
+    if qscheme_str is not None:
+        try:
+            # sample: "a8s4m3221", "a8s4m33222222"
+            match = re.search(r'a(\d)s(\d)m(\d+)', qscheme_str)
+            aa = match.group(1)
+            ss = match.group(2)
+            ee = match.group(3)
+            qscheme_attn = [int(aa)]
+            qscheme_share = [int(ss)]
+            qscheme_expert = [int(e) for e in ee]
+        except:
+            print(f"Quant scheme {qscheme_str} is not valid.")
+    
     for ff in filters:
         qmodule_all = find_layers(layer, filters=[ff])
         qbatch = 64
@@ -612,25 +629,18 @@ def quant_layer_mix_precision(layer, layer_idx, quant_attn, slice_expert_num,
                 gptq[name].quantizer = Quantizer()
 
                 if split_name in attn_filters:
-                    bit = [8]
+                    bit = qscheme_attn
                     gptq[name].quantizer.configure(bit[0], perchannel=True, sym=sym, mse=False)
                 else:
                     match = re.search(r'mlp\.experts\.(\d+)', name)
                     expert_id = int(match.group(1)) if match else -1  ## shared expert id is -1
                     if expert_id == -1:
-                        bit = [2]
+                        bit = qscheme_share
                         gptq[name].quantizer.configure(bit[0], perchannel=True, sym=sym, mse=False)
                     else:
-                        if slice_expert_num == 1:
-                            bit = [2]
-                            gptq[name].quantizer.configure(bit[0], perchannel=True, sym=sym, mse=False)
-                        elif slice_expert_num == 2:
-                            bit = [2, 2]
-                            gptq[name].quantizer.configure(bit[expert_id % slice_expert_num], perchannel=True, sym=sym, mse=False)
-                        elif slice_expert_num == 4:
-                            # bit = [8, 8, 8, 8]
-                            bit = [3, 2, 2, 1]
-                            gptq[name].quantizer.configure(bit[expert_id % slice_expert_num], perchannel=True, sym=sym, mse=False)
+                        bit = qscheme_expert
+                        gptq[name].quantizer.configure(bit[expert_id % slice_expert_num], perchannel=True, sym=sym, mse=False)
+
             def add_batch(name):
                 def tmp(_, inp, out):
                     gptq[name].add_batch(inp[0].data, out.data)
@@ -676,6 +686,7 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp, attention_mask, 
                                 n_experts, n_activated, slice_expert_num, n_shared, args):
 
     olmoe_model = 'olmoe' in args.model.lower()
+    llama_model = 'llama' in args.model.lower()
     batchsize = inp.shape[0]
 
     device = next(layer.parameters()).device
@@ -696,7 +707,7 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp, attention_mask, 
     tick0 = time.time()
     attn_out = torch.zeros_like(hidden_states_inorm)
     for b_i in range(0, batchsize):
-        if olmoe_model:
+        if olmoe_model or llama_model:
             attn_out[b_i:b_i+1] = layer.self_attn(
                 hidden_states=hidden_states_inorm[b_i:b_i+1],
                 attention_mask=attention_mask,

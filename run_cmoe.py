@@ -69,13 +69,13 @@ if __name__ == '__main__':
     parser.add_argument(        '--nshared', type=int, default=2,
         help='Number of shared experts.'
     )
-    parser.add_argument(        '--epoch', type=int, default=1,
+    parser.add_argument(        '--epoch', type=int, default=0,
         help='SFT epoch for CMoE.'
     )
-    parser.add_argument(        '--sft-bsz', type=int, default=2,
+    parser.add_argument(        '--sft-bsz', type=int, default=1,
         help='SFT batch size for CMoE.'
     )
-    parser.add_argument(        '--carve-bsz', type=int, default=2,
+    parser.add_argument(        '--carve-bsz', type=int, default=1,
         help='Carve batch size for CMoE.'
     )
     parser.add_argument(        '--eval-zero', action='store_true',
@@ -83,6 +83,9 @@ if __name__ == '__main__':
     )
     parser.add_argument(        '--prefix', type=str, default=None,
         help='Prefix the results folder if needed.'
+    )
+    parser.add_argument(        '--quant-scheme', type=str, default=None,
+        help='Quantization scheme like a8s4m3221.'
     )
     parser.add_argument(        '--reconstruct_start_layer', type=int, default=0,
         help='Start layer for reconstruction.'
@@ -93,6 +96,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     
+    print("-" * 50)
     print("Loading model: ", args.model)
     model, tokenizer = load_model(args.model)
 
