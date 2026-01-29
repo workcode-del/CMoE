@@ -10,6 +10,233 @@ from eval_cmoe import cmoe_ppl_eval
 
 DEV = torch.device('cuda:0')
 
+@torch.no_grad()
+def reconstruct_moe_from_dense(model, layer, layer_idx, inps, n_experts, n_activated, slice_expert_num, device, args):
+
+    if args.rank_mode == "activation":
+        analyze_sparsity = 0.1
+        rates = analyze_neuron_activations(layer.mlp.act_fn, inps, layer.mlp.gate_proj.weight, layer.mlp.up_proj.weight, sparsity=analyze_sparsity)
+    elif args.rank_mode == "quant_outlier":
+        rates = analyze_quant_outlier(layer, layer_idx, inps, n_experts // slice_expert_num, if_dense=True, save_path=f"plot/_quant_outlier_{layer_idx}.png")
+        rates = rates[0]
+    elif args.rank_mode == "random":
+        rates = torch.randn(layer.mlp.intermediate_size, device=device)
+    elif args.rank_mode == "neuron_index":
+        rates = torch.arange(layer.mlp.intermediate_size, device=device)
+    else:
+        assert False, f"Unknown rank mode: {args.rank_mode}"
+
+    expert_groups, representative_indices = construct_experts_by_rates(
+        rates,
+        num_experts = slice_expert_num,
+        num_shared_experts = 0,
+    )
+    
+    experts = nn.ModuleList()
+    total_neurons_processed = 0
+    scaling_factor = slice_expert_num
+
+    new_intermediate_size = layer.mlp.intermediate_size // slice_expert_num
+    expert_groups = expert_groups[1:]
+    for ii, group_indices in enumerate(expert_groups):
+        expert_mlp = LlamaMLP(layer.mlp.hidden_size, new_intermediate_size)
+
+        with torch.no_grad():
+            group_indices_tensor = torch.tensor(group_indices, dtype=torch.long, device=device)
+            
+            expert_mlp.gate_proj.weight.data = layer.mlp.gate_proj.weight[group_indices_tensor, :]
+            expert_mlp.up_proj.weight.data = layer.mlp.up_proj.weight[group_indices_tensor, :]
+            expert_mlp.down_proj.weight.data = layer.mlp.down_proj.weight[:, group_indices_tensor] * scaling_factor
+            
+        experts.append(expert_mlp)
+        new_expert_intermediate_size = expert_mlp.up_proj.weight.shape[0]
+        total_neurons_processed += new_expert_intermediate_size
+        # print(ii, scaling_factor, new_expert_intermediate_size, expert_mlp.gate_proj.weight.shape, expert_mlp.up_proj.weight.shape, expert_mlp.down_proj.weight.shape)
+    
+    router = Router(layer.mlp.hidden_size, slice_expert_num, n_activated).to(device)
+    router.gate.weight.data = torch.ones(slice_expert_num, layer.mlp.hidden_size).to(torch.bfloat16).to(device)
+    router.classifier = None
+    # init router gate to 1，and make all experts are activated
+
+    # MoE
+    moe = MoE(layer.mlp.hidden_size, new_intermediate_size, slice_expert_num, 0, n_activated).to(device)
+    moe.gate = router
+    moe.experts = experts
+    moe.shared_experts = None
+
+    return moe
+
+@torch.no_grad()
+def reconstruct_moe_from_existing(model, layer, layer_idx, inps, n_experts, n_activated, slice_expert_num, device, args):
+
+    ori_expert_num = len(layer.mlp.experts)
+    new_expert_num = ori_expert_num * slice_expert_num 
+    scaling_factor = slice_expert_num
+
+    ori_router_gate = layer.mlp.gate.weight
+    if type(layer.mlp.gate) == nn.Linear:
+        new_router = nn.Linear(model.config.hidden_size, new_expert_num, dtype=ori_router_gate.dtype, bias=False).to(device)
+    else:
+        new_router = layer.mlp.gate.__class__(model.config).to(device).to(layer.mlp.gate.weight.dtype)
+    # print(new_router)
+    all_new_experts = nn.ModuleList()
+
+    total_neurons_processed = 0
+    gate_start_idx = 0
+
+    tick0 = time.time()
+
+    if args.rank_mode == "quant_outlier":
+        all_rates = analyze_quant_outlier(layer, layer_idx, inps, n_experts // slice_expert_num, if_dense=False, save_path=None)
+
+    for expert_idx, expert in enumerate(layer.mlp.experts):
+        ori_gate_proj_weights = expert.gate_proj.weight
+        ori_up_proj_weights = expert.up_proj.weight
+        ori_down_proj_weights = expert.down_proj.weight
+
+        # print(f"\nProcessing original expert {expert_idx} / {ori_expert_num}")
+        if args.rank_mode == "activation":
+            analyze_sparsity = 0.1
+            rates = analyze_neuron_activations(expert.act_fn, inps, ori_gate_proj_weights, ori_up_proj_weights, sparsity=analyze_sparsity)
+        elif args.rank_mode == "quant_outlier":
+            rates = all_rates[expert_idx]
+        elif args.rank_mode == "random":
+            rates = torch.randn(layer.mlp.intermediate_size, device=device)
+        elif args.rank_mode == "neuron_index":
+            rates = torch.arange(layer.mlp.intermediate_size, device=device)
+        else:
+            assert False, f"Unknown rank mode: {args.rank_mode}"
+        
+        expert_groups, representative_indices = construct_experts_by_rates(
+            rates,
+            num_experts = slice_expert_num,
+            num_shared_experts = 0,
+        )
+        
+        lowrank_sparsity = 0
+        expert_groups = expert_groups[1:]
+        # Create new experts for this original expert
+        for ii, group_indices in enumerate(expert_groups):
+            n_neurons = len(group_indices)
+            expert_mlp = expert.__class__(model.config).to(device)
+            
+            with torch.no_grad():
+                group_indices_tensor = torch.tensor(group_indices, dtype=torch.long, device=ori_gate_proj_weights.device)
+                
+                expert_mlp.gate_proj.weight.data = ori_gate_proj_weights[group_indices_tensor, :]
+                expert_mlp.up_proj.weight.data = ori_up_proj_weights[group_indices_tensor, :]
+                expert_mlp.down_proj.weight.data = ori_down_proj_weights[:, group_indices_tensor] * scaling_factor
+                
+            all_new_experts.append(expert_mlp)
+            new_expert_intermediate_size = expert_mlp.up_proj.weight.shape[0]
+            total_neurons_processed += new_expert_intermediate_size
+            # print(expert_idx, ii, new_expert_intermediate_size, expert_mlp.gate_proj.weight.shape, expert_mlp.up_proj.weight.shape, expert_mlp.down_proj.weight.shape)
+        
+        expanded_gate = ori_router_gate.data[expert_idx, :].unsqueeze(0).repeat(slice_expert_num, 1).to(device)
+
+        # print(f"gate_start_idx, slice_expert_num, expanded_gate.shape: {expert_idx, gate_start_idx, slice_expert_num, expanded_gate.shape}")
+        new_router.weight.data[gate_start_idx: gate_start_idx + slice_expert_num, :] = expanded_gate
+        gate_start_idx += slice_expert_num
+
+    tick1 = time.time()
+    print(f"Layer {layer_idx}, {args.rank_mode} expert re- sort time: {tick1 - tick0}")
+
+    moe = layer.mlp.__class__(model.config).to(device)
+    moe.num_experts = len(all_new_experts)
+    moe.top_k = n_activated
+    moe.gate = new_router
+    moe.experts = all_new_experts
+    if hasattr(layer.mlp, 'shared_experts'):
+        moe.shared_experts = layer.mlp.shared_experts
+
+    return moe
+
+@torch.no_grad()
+def construct_moe(model, moe_model_flag, layer, layer_idx, inp, attention_mask, position_ids, position_embeddings, 
+                                n_experts, n_activated, slice_expert_num, n_shared, args):
+
+    olmoe_model = 'olmoe' in args.model.lower()
+    llama_model = 'llama' in args.model.lower()
+    qwen3_model = 'qwen3' in args.model.lower()
+    qwen3_moe_model = 'qwen3-30b-a3b' in args.model.lower()
+
+    batchsize = inp.shape[0]
+
+    device = next(layer.parameters()).device
+    # print(layer, device)
+    # print(inp.shape)
+
+    # Forward attention
+    inp = inp.to(device)
+    if attention_mask is not None:
+        attention_mask = attention_mask.to(device)
+    
+    if position_ids is not None:
+        position_ids = position_ids.to(device)
+    
+    residual = inp
+    hidden_states_inorm = layer.input_layernorm(inp)
+
+    tick0 = time.time()
+    attn_out = torch.zeros_like(hidden_states_inorm)
+    for b_i in range(0, batchsize):
+        if olmoe_model or llama_model or qwen3_model:
+            attn_out[b_i:b_i+1] = layer.self_attn(
+                hidden_states=hidden_states_inorm[b_i:b_i+1],
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                position_embeddings=position_embeddings)[0]
+        else:
+            attn_out[b_i:b_i+1] = layer.self_attn(
+                hidden_states=hidden_states_inorm[b_i:b_i+1],
+                attention_mask=attention_mask, 
+                position_ids=position_ids)[0]
+    tick1 = time.time()
+    print(f"Inference in origin attention layer {layer_idx} with batch size {batchsize} time: {tick1 - tick0}")
+
+    hidden_states = residual + attn_out
+    residual = hidden_states
+    hidden_states = layer.post_attention_layernorm(hidden_states)
+
+    # print(hidden_states.shape)
+    
+    if moe_model_flag:
+        if hasattr(layer.mlp, 'gate') or hasattr(layer.mlp, 'experts'):        
+            moe = reconstruct_moe_from_existing(model, layer, layer_idx, hidden_states, n_experts, n_activated, slice_expert_num, device, args)
+            layer.mlp = moe
+    else:
+        moe = reconstruct_moe_from_dense(model, layer, layer_idx, hidden_states, n_experts, n_activated, slice_expert_num, device, args)
+        layer.mlp = moe
+    
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    # print(layer)
+    if_quant_layer = True
+    if_quant_attn = True
+
+    if if_quant_layer:
+        quant_layer_mix_precision(layer, layer_idx, if_quant_attn, slice_expert_num, 
+                    hidden_states_inorm, hidden_states, attention_mask, position_ids, position_embeddings, 
+                    args)
+        gc.collect()
+        torch.cuda.empty_cache()
+    
+    print(hidden_states.shape)
+    tick0 = time.time()
+    moe_out = torch.zeros_like(hidden_states)
+    for b_i in range(0, batchsize):
+        if olmoe_model or qwen3_moe_model:
+            moe_out[b_i:b_i+1], _ = layer.mlp(hidden_states[b_i:b_i+1])
+        else:
+            moe_out[b_i:b_i+1] = layer.mlp(hidden_states[b_i:b_i+1])
+    tick1 = time.time()
+    print(f"Inference in new moe layer {layer_idx} with batch size {batchsize} time: {tick1 - tick0}")
+
+    moe_out = moe_out + residual
+    # print("moe_out")
+    return moe_out
+
 def cmoe_sequential(model, tokenizer, dataloader, args):
     print('Starting ...')
 
