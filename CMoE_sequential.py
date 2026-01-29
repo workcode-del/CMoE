@@ -78,6 +78,7 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps, n_experts, n_ac
         new_router = nn.Linear(model.config.hidden_size, new_expert_num, dtype=ori_router_gate.dtype, bias=False).to(device)
     else:
         new_router = layer.mlp.gate.__class__(model.config).to(device).to(layer.mlp.gate.weight.dtype)
+        # new_router.training = False ### for moonlight model
     # print(new_router)
     all_new_experts = nn.ModuleList()
 
@@ -151,6 +152,96 @@ def reconstruct_moe_from_existing(model, layer, layer_idx, inps, n_experts, n_ac
 
     return moe
 
+### unused:
+@torch.no_grad()
+def reconstruct_moe_harddrop(model, layer, hidden_states, n_experts, n_activated, slice_expert_num, if_quantized, device, args):
+
+    ori_expert_num = len(layer.mlp.experts)
+    drop_expert_nums = torch.ones(ori_expert_num, dtype=torch.int)
+
+    drop_expert_nums = drop_expert_nums.to(device)
+
+    avg_drop_expert_num = 1
+    new_expert_num = ori_expert_num * (slice_expert_num - avg_drop_expert_num) 
+    scaling_factor = slice_expert_num - avg_drop_expert_num
+    sparsity = 0.1
+
+    if if_quantized:
+        ori_router_gate = layer.mlp.gate.compressor.decompress_module(layer.mlp.gate)
+    else:
+        ori_router_gate = layer.mlp.gate.weight
+    new_router = nn.Linear(model.config.hidden_size, new_expert_num, dtype=ori_router_gate.dtype, bias=False).to(device)
+    all_new_experts = nn.ModuleList()
+
+    total_neurons_processed = 0
+    gate_start_idx = 0
+    calib_size = 8
+    calib_hidden_states = hidden_states[:8]
+
+    for expert_idx, expert in enumerate(layer.mlp.experts):
+        if if_quantized:
+            ori_gate_proj_weights = expert.gate_proj.compressor.decompress_module(expert.gate_proj)
+            ori_up_proj_weights = expert.up_proj.compressor.decompress_module(expert.up_proj)
+            ori_down_proj_weights = expert.down_proj.compressor.decompress_module(expert.down_proj)
+        else:
+            ori_gate_proj_weights = expert.gate_proj.weight
+            ori_up_proj_weights = expert.up_proj.weight
+            ori_down_proj_weights = expert.down_proj.weight
+
+        # print(f"\nProcessing original expert {expert_idx} / {ori_expert_num}")
+
+        # print(f"Expert {expert_idx} scores shape: {expert_scores.shape}")
+        rates = analyze_neuron_activations(expert.act_fn, hidden_states, ori_gate_proj_weights, ori_up_proj_weights, sparsity=sparsity)
+
+        expert_groups, representative_indices = construct_experts_by_rates(
+            rates,
+            num_experts = slice_expert_num,
+            num_shared_experts = 0,
+        )
+
+        drop_expert_num = drop_expert_nums[expert_idx] * avg_drop_expert_num
+        remain_expert_num = slice_expert_num - drop_expert_num
+
+        expert_groups = expert_groups[1:remain_expert_num + 1]
+        # Create new experts for this original expert
+        for ii, group_indices in enumerate(expert_groups):
+            expert_mlp = expert.__class__(model.config).to(device)
+            
+            with torch.no_grad():
+                gate_proj_weights = []
+                up_proj_weights = []
+                down_proj_weights = []
+
+                for global_idx in group_indices:
+                    gate_proj_weights.append(ori_gate_proj_weights[global_idx, :])
+                    up_proj_weights.append(ori_up_proj_weights[global_idx, :])
+                    down_proj_weights.append(ori_down_proj_weights[:, global_idx] * scaling_factor)
+
+                expert_mlp.gate_proj.weight.data = torch.stack(gate_proj_weights)
+                expert_mlp.up_proj.weight.data = torch.stack(up_proj_weights)
+                expert_mlp.down_proj.weight.data = torch.stack(down_proj_weights, dim=1)
+
+            all_new_experts.append(expert_mlp)
+            total_neurons_processed += len(group_indices)
+
+        expanded_gate = ori_router_gate.data[expert_idx, :].unsqueeze(0).repeat(remain_expert_num, 1).to(device)
+
+        new_router.weight.data[gate_start_idx: gate_start_idx + remain_expert_num, :] = expanded_gate
+        gate_start_idx += remain_expert_num
+
+    model.config.intermediate_size = all_new_experts[0].up_proj.weight.shape[0]
+    model.config.num_experts = new_expert_num
+    model.config.num_experts_per_tok = n_activated
+    # print(model.config.intermediate_size, model.config.num_experts, model.config.num_experts_per_tok)
+
+    moe = layer.mlp
+    moe.num_experts = len(all_new_experts)
+    moe.top_k = n_activated
+    moe.gate = new_router
+    moe.experts = all_new_experts
+
+    return moe
+
 @torch.no_grad()
 def construct_moe(model, moe_model_flag, layer, layer_idx, inp, attention_mask, position_ids, position_embeddings, 
                                 n_experts, n_activated, slice_expert_num, n_shared, args):
@@ -159,6 +250,7 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp, attention_mask, 
     llama_model = 'llama' in args.model.lower()
     qwen3_model = 'qwen3' in args.model.lower()
     qwen3_moe_model = 'qwen3-30b-a3b' in args.model.lower()
+    dpskv3_model = 'moonlight' in args.model.lower()
 
     batchsize = inp.shape[0]
 
@@ -180,7 +272,7 @@ def construct_moe(model, moe_model_flag, layer, layer_idx, inp, attention_mask, 
     tick0 = time.time()
     attn_out = torch.zeros_like(hidden_states_inorm)
     for b_i in range(0, batchsize):
-        if olmoe_model or llama_model or qwen3_model:
+        if olmoe_model or llama_model or qwen3_model or dpskv3_model:
             attn_out[b_i:b_i+1] = layer.self_attn(
                 hidden_states=hidden_states_inorm[b_i:b_i+1],
                 attention_mask=attention_mask,

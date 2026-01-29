@@ -203,6 +203,22 @@ def get_qwen3(model_path):
 
     return model
 
+def get_moonlight(model_path):
+    from transformers import DeepseekV3ForCausalLM
+
+    model = DeepseekV3ForCausalLM.from_pretrained(
+        model_path,
+        torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=True,
+        device_map='auto',
+        trust_remote_code=True
+    )
+
+    model.seqlen = 2048
+    # model.seqlen = 4096
+
+    return model
+
 def get_auto(model_path):
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -231,7 +247,7 @@ def load_model(model_path):
     elif 'olmoe' in model_path.lower():
         model = get_olmoe(model_path)
         tokenizer = AutoTokenizer.from_pretrained(model_path)
-    elif 'deepseek-v2-lite' in model_path.lower() or 'moonlight' in model_path.lower():
+    elif 'deepseek-v2-lite' in model_path.lower():
         model, tokenizer = get_deepseek_v2_lite(model_path)
     elif 'llama' in model_path.lower():
         model = get_llama(model_path)
@@ -242,6 +258,9 @@ def load_model(model_path):
     elif 'qwen3' in model_path.lower():
         model = get_qwen3(model_path)
         tokenizer = AutoTokenizer.from_pretrained(model_path)
+    elif 'moonlight' in model_path.lower():
+        model = get_moonlight(model_path)
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     else:
         model, tokenizer = get_auto(model_path)
     model.eval()

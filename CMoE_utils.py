@@ -129,6 +129,7 @@ def analyze_neuron_activations(act_fn, inps, gate_proj_weights, up_proj_weights,
     return activation_rates
     # return activation_counts, activation_values, activation_markers
 
+@torch.no_grad()
 def construct_experts_by_rates(
     origin_rates,
     num_experts,
@@ -150,94 +151,7 @@ def construct_experts_by_rates(
     
     return expert_groups, None
 
-def reconstruct_moe_harddrop(model, layer, hidden_states, n_experts, n_activated, slice_expert_num, if_quantized, device, args):
-
-    ori_expert_num = len(layer.mlp.experts)
-    drop_expert_nums = torch.ones(ori_expert_num, dtype=torch.int)
-
-    drop_expert_nums = drop_expert_nums.to(device)
-
-    avg_drop_expert_num = 1
-    new_expert_num = ori_expert_num * (slice_expert_num - avg_drop_expert_num) 
-    scaling_factor = slice_expert_num - avg_drop_expert_num
-    sparsity = 0.1
-
-    if if_quantized:
-        ori_router_gate = layer.mlp.gate.compressor.decompress_module(layer.mlp.gate)
-    else:
-        ori_router_gate = layer.mlp.gate.weight
-    new_router = nn.Linear(model.config.hidden_size, new_expert_num, dtype=ori_router_gate.dtype, bias=False).to(device)
-    all_new_experts = nn.ModuleList()
-
-    total_neurons_processed = 0
-    gate_start_idx = 0
-    calib_size = 8
-    calib_hidden_states = hidden_states[:8]
-
-    for expert_idx, expert in enumerate(layer.mlp.experts):
-        if if_quantized:
-            ori_gate_proj_weights = expert.gate_proj.compressor.decompress_module(expert.gate_proj)
-            ori_up_proj_weights = expert.up_proj.compressor.decompress_module(expert.up_proj)
-            ori_down_proj_weights = expert.down_proj.compressor.decompress_module(expert.down_proj)
-        else:
-            ori_gate_proj_weights = expert.gate_proj.weight
-            ori_up_proj_weights = expert.up_proj.weight
-            ori_down_proj_weights = expert.down_proj.weight
-
-        # print(f"\nProcessing original expert {expert_idx} / {ori_expert_num}")
-
-        # print(f"Expert {expert_idx} scores shape: {expert_scores.shape}")
-        rates = analyze_neuron_activations(expert.act_fn, hidden_states, ori_gate_proj_weights, ori_up_proj_weights, sparsity=sparsity)
-
-        expert_groups, representative_indices = construct_experts_by_rates(
-            rates,
-            num_experts = slice_expert_num,
-            num_shared_experts = 0,
-        )
-
-        drop_expert_num = drop_expert_nums[expert_idx] * avg_drop_expert_num
-        remain_expert_num = slice_expert_num - drop_expert_num
-
-        expert_groups = expert_groups[1:remain_expert_num + 1]
-        # Create new experts for this original expert
-        for ii, group_indices in enumerate(expert_groups):
-            expert_mlp = expert.__class__(model.config).to(device)
-            
-            with torch.no_grad():
-                gate_proj_weights = []
-                up_proj_weights = []
-                down_proj_weights = []
-
-                for global_idx in group_indices:
-                    gate_proj_weights.append(ori_gate_proj_weights[global_idx, :])
-                    up_proj_weights.append(ori_up_proj_weights[global_idx, :])
-                    down_proj_weights.append(ori_down_proj_weights[:, global_idx] * scaling_factor)
-
-                expert_mlp.gate_proj.weight.data = torch.stack(gate_proj_weights)
-                expert_mlp.up_proj.weight.data = torch.stack(up_proj_weights)
-                expert_mlp.down_proj.weight.data = torch.stack(down_proj_weights, dim=1)
-
-            all_new_experts.append(expert_mlp)
-            total_neurons_processed += len(group_indices)
-
-        expanded_gate = ori_router_gate.data[expert_idx, :].unsqueeze(0).repeat(remain_expert_num, 1).to(device)
-
-        new_router.weight.data[gate_start_idx: gate_start_idx + remain_expert_num, :] = expanded_gate
-        gate_start_idx += remain_expert_num
-
-    model.config.intermediate_size = all_new_experts[0].up_proj.weight.shape[0]
-    model.config.num_experts = new_expert_num
-    model.config.num_experts_per_tok = n_activated
-    # print(model.config.intermediate_size, model.config.num_experts, model.config.num_experts_per_tok)
-
-    moe = layer.mlp
-    moe.num_experts = len(all_new_experts)
-    moe.top_k = n_activated
-    moe.gate = new_router
-    moe.experts = all_new_experts
-
-    return moe
-
+@torch.no_grad()
 def lowrank_compress_svd(weight_matrix, lowrank_sparsity, save_path=None):
     U, S, Vh = torch.linalg.svd(weight_matrix.float(), full_matrices=False)
 
@@ -284,6 +198,7 @@ def lowrank_compress_svd(weight_matrix, lowrank_sparsity, save_path=None):
     
     return low_rank_matrix.to(weight_matrix.dtype)
 
+@torch.no_grad()
 def analyze_quant_outlier(layer, layer_idx, hidden_states, n, if_dense=True, save_path=None):
     print(f"reconstruct moe from dense layer {layer_idx}")
     nsample = hidden_states.shape[0]
@@ -335,7 +250,7 @@ def analyze_quant_outlier(layer, layer_idx, hidden_states, n, if_dense=True, sav
                 del gptq[name]
             
             tick1 = time.time()
-            print(f"Simulate quant for outliers, layer {layer_idx} {ff} {qmi}:{qmi + min(qbatch, len(qmodule.keys()))} bits: {wbits} time: {tick1 - tick0}")
+            print(f"Simulate quant to find outliers, layer {layer_idx} {ff} {qmi}:{qmi + min(qbatch, len(qmodule.keys()))} bits: {wbits} time: {tick1 - tick0}")
 
         del qmodule_all
     
@@ -397,6 +312,7 @@ def analyze_quant_outlier(layer, layer_idx, hidden_states, n, if_dense=True, sav
     
     return all_rates
 
+@torch.no_grad()
 def quant_layer_mix_precision(layer, layer_idx, quant_attn, slice_expert_num, 
                 attn_hidden_states, ffn_hidden_states, attention_mask, position_ids, position_embeddings, 
                 args):
@@ -405,7 +321,6 @@ def quant_layer_mix_precision(layer, layer_idx, quant_attn, slice_expert_num,
     assert attn_hidden_states.shape[0] == ffn_hidden_states.shape[0], f"attn_hidden_states.shape: {attn_hidden_states.shape}, ffn_hidden_states.shape: {ffn_hidden_states.shape}"
 
     gptq = {}
-    wbits = 4
     groupsize = 128
     act_order = True
     static_groups = False
