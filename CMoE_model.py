@@ -38,9 +38,9 @@ class Router(nn.Module):
         self.gate = nn.Linear(n_experts, hidden_size, bias=False).to(torch.bfloat16)
         self.classifier = nn.Linear(n_experts, hidden_size, bias=False).to(torch.bfloat16)
 
-        self.extra_scale = nn.Parameter(torch.ones(n_experts, dtype=torch.bfloat16))
-        self.extra_bias = nn.Parameter(torch.zeros(n_experts, dtype=torch.float32))
-        self.bias_update_speed = bias_speed
+        # self.extra_scale = nn.Parameter(torch.ones(n_experts, dtype=torch.bfloat16))
+        # self.extra_bias = nn.Parameter(torch.zeros(n_experts, dtype=torch.float32))
+        # self.bias_update_speed = bias_speed
     
     def update_bias(self, counts):
         mean_load = counts.mean()
@@ -48,8 +48,8 @@ class Router(nn.Module):
         overloaded = counts > mean_load
         underloaded = counts < mean_load
 
-        self.extra_bias.data[overloaded] -= self.bias_update_speed
-        self.extra_bias.data[underloaded] += self.bias_update_speed
+        # self.extra_bias.data[overloaded] -= self.bias_update_speed
+        # self.extra_bias.data[underloaded] += self.bias_update_speed
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.classifier is None:
@@ -61,7 +61,7 @@ class Router(nn.Module):
 
         # print(scores.shape)
         scores = scores.softmax(dim=-1, dtype=torch.float32)
-        scores = scores + self.extra_bias.to(x.device)[None, :]
+        # scores = scores + self.extra_bias.to(x.device)[None, :]
 
         weights, indices = torch.topk(scores, self.topk, dim=-1)
 
@@ -87,7 +87,6 @@ class MoE(nn.Module):
         self.experts = None
         # self.shared_experts = LlamaMLP(self.dim, self.n_shared_experts * moe_inter_dim)
         self.shared_experts = None
-        self.cus_training = False
         self.enable_scale = True
         self.return_router_info = return_router_info
 
@@ -101,8 +100,6 @@ class MoE(nn.Module):
 
         y = torch.zeros_like(x)
         counts = torch.bincount(indices.flatten(), minlength=self.n_routed_experts)
-        if self.cus_training:
-            self.gate.update_bias(counts.to(dtype = torch.bfloat16))
 
         counts = counts.tolist()
         for i in range(self.experts_start_idx, self.experts_end_idx):

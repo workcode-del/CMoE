@@ -5,6 +5,7 @@ attn_sizes = {"llama7b": 4096 * 4096 * 4,
               "dpsk-v2-lite": 2048 * 2048 + 2048 * 512 + 
                               512 * 1024 * 2 + 16 * 128 * 64 + 16 * 64 * 64 +
                               2048 * 2048,  ### MLA,
+              "qwen3-30b-a3b": 2048 * 4096 * 2 + 2048 * 512 * 2, # GQA
               "llama3-8b": 4096 * 4096 * 2 + 4096 * 1024 * 2, # GQA
               "qwen3-8b": 4096 * 4096 * 2 + 4096 * 1024 * 2, # GQA
               "llama2-13b": 5120 * 5120 * 4, # MHA
@@ -13,10 +14,12 @@ attn_sizes = {"llama7b": 4096 * 4096 * 4,
 shared_sizes = {"llama7b": 0, "llama3-8b": 0, "qwen3-8b": 0, "llama2-13b": 0,
                 "dpsk-moe-16b": 10944 * 2048 * 3, 
                 "dpsk-v2-lite": 10944 * 2048 * 3, 
+                "qwen3-30b-a3b": 0,
                 }
 ffn_sizes = {"llama7b": 4096 * 11008 * 3, 
              "dpsk-moe-16b": 2048 * 1408 * 3 * 64,
              "dpsk-v2-lite": 2048 * 1408 * 3 * 64,
+             "qwen3-30b-a3b": 2048 * 768 * 3 * 128,
              "llama3-8b": 4096 * 14336 * 3,
              "qwen3-8b": 4096 * 12288 * 3,
              "llama2-13b": 5120 * 13824 * 3,
@@ -24,6 +27,7 @@ ffn_sizes = {"llama7b": 4096 * 11008 * 3,
 layer_nums = {"llama7b": 32, 
               "dpsk-moe-16b": 26,
               "dpsk-v2-lite": 26,
+              "qwen3-30b-a3b": 48,
               "llama3-8b": 32,
               "qwen3-8b": 36,
               "llama2-13b": 40,
@@ -31,6 +35,7 @@ layer_nums = {"llama7b": 32,
 vol_sizes = {"llama7b": 32000 * 4096, 
              "dpsk-moe-16b": 102400 * 2048,
              "dpsk-v2-lite": 102400 * 2048,
+             "qwen3-30b-a3b": 151936 * 2048,
              "llama3-8b": 128256 * 4096,
              "qwen3-8b": 151936 * 4096,
              "llama2-13b": 32000 * 5120,
@@ -98,6 +103,22 @@ qscheme_strs = [
 #     "a8s2m3222",
 #     "a8s2m2222",
 #     "a8s2m3221"]
+
+modeltype = "qwen3-30b-a3b"
+qscheme_strs = ["a4s0m4",
+                "a4s0m3",
+                "a4s0m2",
+                "a3s0m4",
+                "a3s0m3",
+                "a3s0m2",
+    "a8s4m22",
+    "a8s4m42",
+    "a8s4m32",
+    "a8s2m22",
+    "a8s4m3221",
+    "a8s2m3222",
+    "a8s2m2222",
+    "a8s2m3221"]
 
 print(modeltype)
 for qscheme_str in qscheme_strs:

@@ -19,7 +19,13 @@ Note: please modify the version of some packages for your own environment.
 
 ## Supported Models
 
-OLMoE / Deepseek(v1)-MoE-16B0-base / Deepseek-v2-lite(16B-A3B)
+MoE Models:
+
+OLMoE / Deepseek(v1)-MoE-16B0-base / Deepseek-v2-lite(16B-A3B) / Moonlight(16B-A3B) / Qwen3-30B-A3B
+
+Dense Models:
+
+Llama-2-7B / Llama-2-13B / Llama3-8B / Qwen3-8B
 
 ## Quick Start
 
@@ -41,8 +47,7 @@ python run_cmoe.py $MODEL_PATH wikitext2 \
 
 bash run.sh
 ```
-
-```python
+# python
 python eval_cmoe.py $MODEL_PATH 
 ```
 

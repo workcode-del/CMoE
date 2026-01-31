@@ -4,3 +4,5 @@ result_logs/
 test/
 model/
 logs/
+
+run.*.sh

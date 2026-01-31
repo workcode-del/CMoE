@@ -122,16 +122,41 @@ if __name__ == '__main__':
     # ori_ppl = cmoe_ppl_eval(model, testloader, args.dataset, args)
     # print(f"Original model ppl on {args.dataset}: {ori_ppl}")
 
-    carved_model, tick_1, tick_2, pre_ppl, ppl = cmoe_sequential(model, tokenizer, dataloader, args)
+    carved_model = cmoe_sequential(model, tokenizer, dataloader, args)
     save_carved_model = False
     if save_carved_model:
         carved_save_dir = "model/carved_cmoe_e" + str(args.nexperts) + "_a" + str(args.nactivated)
         print(carved_model)
         carved_model.save_pretrained(carved_save_dir)
         tokenizer.save_pretrained(carved_save_dir)
+    
+    # print(carved_model)
 
-    rt_construct = tick_1 - tick
-    extra_time = tick_2 - tick_1
-    rt = time.time() - tick - extra_time
-    print(f"Runtime of training-free construction (ppl): {rt_construct:.2f}")
+    tick1 = time.time()
+
+    sft_flag = args.epoch > 0
+    if sft_flag:
+        print('Starting SFT...')    
+
+        carved_model.cuda()
+        carved_model = simple_sft(carved_model, tokenizer, args, epoch = args.epoch)
+
+        carved_model.eval()
+
+        print('SFT_ppl:')
+        ppl = []
+        datasets = ['wikitext2', 'c4-new']
+        for dataset in datasets:
+            dataloader, testloader = get_loaders(
+                dataset, seed=args.seed, tokenizer=tokenizer, seqlen=carved_model.seqlen, bsz = args.carve_bsz
+            )
+            print(dataset)
+            eval_set = dataset
+            ppl_i = cmoe_ppl_eval(carved_model, testloader, eval_set, args)
+            ppl.append(f"{dataset}: {ppl_i}")
+        
+        print("SFT_ppl: ", ppl)
+
+    rt = time.time() - tick1
+    print(f"Runtime of training-free construction (ppl): {tick1 - tick:.2f}")
     print(f"Runtime of fine-tuning construction: {rt:.2f}")

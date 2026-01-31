@@ -433,8 +433,6 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
         gc.collect()
         torch.cuda.empty_cache()
     
-    tick_1 = time.time()
-
     # print('Training_free_ppl:')
     pre_ppl = []
     datasets = ['wikitext2', 'c4-new']
@@ -447,36 +445,4 @@ def cmoe_sequential(model, tokenizer, dataloader, args):
         ppl_i = cmoe_ppl_eval(model, testloader, eval_set, args)
         pre_ppl.append(f"{dataset}: {ppl_i}")
     
-    tick_2 = time.time()
-
-    sft_flag = args.epoch > 0
-    if sft_flag:
-        print('Starting SFT...')    
-        # LoRa-based Supervised Fine-tuning
-        for layer in layers:
-                layer.mlp.cus_training = True
-
-        model.cuda()
-        model = simple_sft(model, tokenizer, args, epoch = args.epoch)
-
-        for layer in layers:
-            layer.mlp.cus_training = False
-
-        model.eval()
-
-        model.config.use_cache = use_cache
-        print('SFT_ppl:')
-        ppl = []
-        datasets = ['wikitext2', 'c4-new']
-        for dataset in datasets:
-            dataloader, testloader = get_loaders(
-                dataset, seed=args.seed, tokenizer=tokenizer, seqlen=model.seqlen, bsz = args.carve_bsz
-            )
-            print(dataset)
-            eval_set = dataset
-            ppl_i = cmoe_ppl_eval(model, testloader, eval_set, args)
-            ppl.append(f"{dataset}: {ppl_i}")
-        
-        print("SFT_ppl: ", ppl)
-
-    return model, tick_1, tick_2, pre_ppl, ppl if sft_flag else None
+    return model
